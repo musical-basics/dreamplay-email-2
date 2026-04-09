@@ -28,7 +28,6 @@
 
       "components/ui/**",
       "components/editor/**",
-      "components/audience/**",
       "components/campaigns-table.tsx",
       "components/chains/**",
       "components/rotation/**",
@@ -42,7 +41,6 @@
       "app/editor/**",
       "app/editor-v2/**",
 
-      "**/audience/**",
       "**/journeys/**",
       "**/migrate/**",
       "**/crm/**",
