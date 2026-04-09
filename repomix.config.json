@@ -25,8 +25,37 @@
     "customPatterns": [
       "**/*.local",
       "*repomix*",
+
       "components/ui/**",
+      "components/editor/**",
+      "components/audience/**",
+      "components/campaigns-table.tsx",
+      "components/chains/**",
+      "components/rotation/**",
+      "components/chain/**",
+      "components/dashboard/**",
       "hooks/**",
+
+      "lib/dnd-blocks/**",
+      "lib/parsers/**",
+
+      "app/editor/**",
+      "app/editor-v2/**",
+
+      "**/audience/**",
+      "**/journeys/**",
+      "**/migrate/**",
+      "**/crm/**",
+      "**/discounts/**",
+      "**/assets/**",
+      "**/chain-rotations/**",
+      "**/chain/**",
+      "**/rotation/**",
+      "**/rotation-send/**",
+      "**/logs/**",
+      "**/triggers/**",
+      "**/automated-emails/**",
+
       "postcss.config.mjs",
       "tsconfig.json",
       "tsconfig.tsbuildinfo",
