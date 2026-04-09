@@ -399,9 +399,11 @@ async function handleSubscribers(
 async function handleTags(
   request: Request,
   method: string,
-  workspace: string
+  workspace: string,
+  path: string[]
 ): Promise<NextResponse> {
   const supabase = getAdminClient();
+  const tagId = path[1]; // present for /tags/:tag_id
 
   if (method === "GET") {
     const { data, error } = await supabase
@@ -421,6 +423,62 @@ async function handleTags(
       .single();
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
     return NextResponse.json(data, { status: 201 });
+  }
+
+  // DELETE /tags/:tag_id
+  // Tags are stored as TEXT[] on subscribers.tags (no junction table).
+  // We: (1) validate the tag belongs to this workspace, (2) remove the tag
+  // name from every subscriber's tags array, (3) delete the tag_definitions row.
+  if (method === "DELETE" && tagId) {
+    // 1. Validate tag exists and belongs to this workspace
+    const { data: tagDef, error: tagErr } = await supabase
+      .from("tag_definitions")
+      .select("id, name")
+      .eq("id", tagId)
+      .eq("workspace", workspace)
+      .single();
+
+    if (tagErr || !tagDef) return notFound("Tag not found in this workspace");
+
+    // 2. Find every subscriber in this workspace whose tags array contains this tag name
+    const { data: affectedSubs, error: subFetchErr } = await supabase
+      .from("subscribers")
+      .select("id, tags")
+      .eq("workspace", workspace)
+      .contains("tags", [tagDef.name]);
+
+    if (subFetchErr) {
+      return NextResponse.json({ error: subFetchErr.message }, { status: 500 });
+    }
+
+    // 3. Remove the tag name from each subscriber's tags array (parallel batch)
+    if (affectedSubs && affectedSubs.length > 0) {
+      const updates = affectedSubs.map((sub: any) =>
+        supabase
+          .from("subscribers")
+          .update({ tags: (sub.tags || []).filter((t: string) => t !== tagDef.name) })
+          .eq("id", sub.id)
+      );
+      const results = await Promise.all(updates);
+      const firstErr = results.find((r) => r.error);
+      if (firstErr?.error) {
+        return NextResponse.json({ error: firstErr.error.message }, { status: 500 });
+      }
+    }
+
+    // 4. Delete the tag_definitions row
+    const { error: deleteErr } = await supabase
+      .from("tag_definitions")
+      .delete()
+      .eq("id", tagId)
+      .eq("workspace", workspace);
+
+    if (deleteErr) return NextResponse.json({ error: deleteErr.message }, { status: 500 });
+
+    return NextResponse.json({
+      success: true,
+      removedFrom: affectedSubs?.length ?? 0,
+    });
   }
 
   return notFound("Tags endpoint not found");
@@ -531,7 +589,7 @@ async function handleRequest(request: Request, ctx: RouteContext): Promise<NextR
       return handleSubscribers(request, method, workspace, path);
 
     case "tags":
-      return handleTags(request, method, workspace);
+      return handleTags(request, method, workspace, path);
 
     case "merge-tags":
       return handleMergeTags(request, method);
