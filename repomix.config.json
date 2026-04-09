@@ -1,0 +1,34 @@
+{
+  "output": {
+    "filePath": "dreamplay-email-2-repomix.xml",
+    "style": "xml",
+    "showLineNumbers": true,
+    "copyToClipboard": false
+  },
+  "ignore": {
+    "useGitignore": true,
+    "useDefaultPatterns": true,
+    "customPatterns": [
+      "node_modules/**",
+      ".next/**",
+      "*.tsbuildinfo",
+      "pnpm-lock.yaml",
+      "next-env.d.ts",
+      "**/*.xml",
+      "public/emails/**"
+    ]
+  },
+  "include": [
+    "app/**",
+    "components/**",
+    "lib/**",
+    "hooks/**",
+    "inngest/**",
+    "supabase/**",
+    "middleware.ts",
+    "next.config.mjs",
+    "tsconfig.json",
+    "package.json",
+    ".env.example"
+  ]
+}
