@@ -13,6 +13,7 @@ import {
     SelectValue,
 } from "@/components/ui/select"
 import Link from "next/link"
+import { useSearchParams, useParams } from "next/navigation"
 import { Upload, ImageIcon, ArrowLeft, Bookmark } from "lucide-react"
 import { AssetPickerModal } from "./asset-picker-modal"
 import { getDefaultLinks, getCustomLinks, type DefaultLinks, type CustomLink } from "@/app/actions/settings"
@@ -30,6 +31,9 @@ export function AssetLoader({ variables, assets, onUpdateAsset, showBackButton =
     const [activeVariable, setActiveVariable] = useState<string | null>(null)
     const [savedLinks, setSavedLinks] = useState<DefaultLinks | null>(null)
     const [customLinks, setCustomLinks] = useState<CustomLink[]>([])
+    const searchParams = useSearchParams()
+    const routeParams = useParams<{ workspace: string }>()
+    const backWorkspace = routeParams?.workspace || searchParams.get("workspace") || ""
 
     useEffect(() => {
         Promise.all([
@@ -164,7 +168,7 @@ export function AssetLoader({ variables, assets, onUpdateAsset, showBackButton =
         <aside className="w-full h-full flex flex-col bg-card overflow-hidden">
             <div className="p-4 border-b border-border">
                 {showBackButton && (
-                    <Link href="/" className="mb-4 inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors">
+                    <Link href={backWorkspace ? `/${backWorkspace}` : "/"} className="mb-4 inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors">
                         <ArrowLeft className="w-3 h-3" />
                         Back to Dashboard
                     </Link>

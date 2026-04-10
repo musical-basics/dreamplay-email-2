@@ -17,7 +17,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { createClient } from "@/lib/supabase/client"
-import { useRouter } from "next/navigation"
+import { useRouter, useParams } from "next/navigation"
 import { useToast } from "@/hooks/use-toast"
 
 interface CampaignHeaderProps {
@@ -45,6 +45,8 @@ export function CampaignHeader({ campaign, onSendBroadcast, isSent, broadcastSta
     const router = useRouter()
     const { toast } = useToast()
     const supabase = createClient()
+    const params = useParams<{ workspace: string }>()
+    const workspace = params?.workspace || ""
 
     const handleSaveSubject = async () => {
         setSaving(true)
@@ -74,11 +76,11 @@ export function CampaignHeader({ campaign, onSendBroadcast, isSent, broadcastSta
         <div className="space-y-4">
             {/* Breadcrumbs */}
             <nav className="flex items-center gap-2 text-sm text-muted-foreground">
-                <Link href="/" className="transition-colors hover:text-foreground">
+                <Link href={workspace ? `/${workspace}` : "/"} className="transition-colors hover:text-foreground">
                     Home
                 </Link>
                 <ChevronRight className="h-4 w-4" />
-                <Link href="/campaigns" className="text-muted-foreground hover:text-foreground transition-colors">
+                <Link href={workspace ? `/${workspace}/campaigns` : "/campaigns"} className="text-muted-foreground hover:text-foreground transition-colors">
                     Campaigns
                 </Link>
                 <ChevronRight className="h-4 w-4" />
@@ -98,8 +100,8 @@ export function CampaignHeader({ campaign, onSendBroadcast, isSent, broadcastSta
                     <Button variant="outline" asChild className="w-fit gap-2 border-border hover:bg-secondary bg-transparent">
                         <Link href={
                             campaign.html_content?.includes('"_marker":"__dnd_blocks__"')
-                                ? `/dnd-editor?id=${campaign.id}`
-                                : `/editor?id=${campaign.id}`
+                                ? `/dnd-editor?id=${campaign.id}${workspace ? `&workspace=${workspace}` : ""}`
+                                : `/editor?id=${campaign.id}${workspace ? `&workspace=${workspace}` : ""}`
                         }>
                             <Pencil className="h-4 w-4" />
                             Edit Design

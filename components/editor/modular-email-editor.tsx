@@ -15,7 +15,7 @@ import { Monitor, Smartphone, Loader2, Check, ArrowLeft, Undo, Redo, History, Co
 import { useToast } from "@/hooks/use-toast"
 import { saveVersion } from "@/app/actions/versions"
 import { getCampaignBackups } from "@/app/actions/campaigns"
-import { useSearchParams } from "next/navigation"
+import { useSearchParams, useParams } from "next/navigation"
 import { cn } from "@/lib/utils"
 import Link from "next/link"
 import { formatDistanceToNow } from "date-fns"
@@ -155,6 +155,9 @@ export function ModularEmailEditor({
     // HISTORY & VERSIONING
     const searchParams = useSearchParams()
     const campaignId = campaignIdProp || searchParams.get("id")
+    const workspaceFromQuery = searchParams.get("workspace")
+    const routeParams = useParams<{ workspace: string }>()
+    const backWorkspace = routeParams?.workspace || workspaceFromQuery || ""
     const [history, setHistory] = useState<string[]>([])
     const [historyIndex, setHistoryIndex] = useState(-1)
 
@@ -300,7 +303,7 @@ export function ModularEmailEditor({
             <div className="flex-shrink-0 w-[300px] border-r border-border h-full flex flex-col bg-card">
                 {/* Header Link */}
                 <div className="p-3 border-b border-border">
-                    <Link href="/" className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors">
+                    <Link href={backWorkspace ? `/${backWorkspace}` : "/"} className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors">
                         <ArrowLeft className="w-3 h-3" />
                         Back to Dashboard
                     </Link>

@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { useRouter } from "next/navigation"
+import { useRouter, useParams } from "next/navigation"
 import { Plus } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -23,6 +23,7 @@ export function CreateAutomatedDialog() {
     const [name, setName] = useState("")
     const [loading, setLoading] = useState(false)
     const router = useRouter()
+    const params = useParams<{ workspace: string }>()
     const { toast } = useToast()
 
     const handleCreate = async () => {
@@ -49,7 +50,7 @@ export function CreateAutomatedDialog() {
             if (result.data?.id) {
                 setOpen(false)
                 setName("")
-                router.push(`/editor?id=${result.data.id}`)
+                router.push(`/editor?id=${result.data.id}${params?.workspace ? `&workspace=${params.workspace}` : ""}`)
             }
         } catch (error: any) {
             console.error("Error creating automated email:", error)

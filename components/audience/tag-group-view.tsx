@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge"
 import { Send, Users, Tag } from "lucide-react"
 import { createCampaignForTag } from "@/app/actions/campaigns"
 import { DEFAULT_WORKSPACE } from "@/lib/workspace"
-import { useRouter } from "next/navigation"
+import { useRouter, useParams } from "next/navigation"
 import { useToast } from "@/hooks/use-toast"
 
 interface TagGroupViewProps {
@@ -28,6 +28,7 @@ const tagColors: Record<string, string> = {
 export function TagGroupView({ subscribers }: TagGroupViewProps) {
     const router = useRouter()
     const { toast } = useToast()
+    const params = useParams<{ workspace: string }>()
 
     const groupedSubscribers = useMemo(() => {
         const groups: Record<string, Subscriber[]> = {}
@@ -64,7 +65,7 @@ export function TagGroupView({ subscribers }: TagGroupViewProps) {
             })
 
             if (result.data?.id) {
-                router.push(`/editor?id=${result.data.id}`)
+                router.push(`/editor?id=${result.data.id}${params?.workspace ? `&workspace=${params.workspace}` : ""}`)
             }
         } catch (error: any) {
             toast({

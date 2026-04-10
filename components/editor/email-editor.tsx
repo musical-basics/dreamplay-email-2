@@ -80,6 +80,8 @@ export function EmailEditor({
     const searchParams = useSearchParams()
     const currentId = searchParams.get("id")
     const { workspace } = useParams<{ workspace: string }>()
+    const workspaceFromQuery = searchParams.get("workspace")
+    const backWorkspace = workspace || workspaceFromQuery || ""
     const { toast } = useToast()
 
 
@@ -192,7 +194,7 @@ export function EmailEditor({
                     <div className="h-full flex flex-col">
                         {/* Header Link */}
                         <div className="p-3 border-b border-border">
-                            <Link href="/" className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors">
+                            <Link href={backWorkspace ? `/${backWorkspace}` : "/"} className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors">
                                 <ArrowLeft className="w-3 h-3" />
                                 Back to Dashboard
                             </Link>

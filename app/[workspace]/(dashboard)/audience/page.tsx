@@ -791,7 +791,7 @@ export default function AudienceManagerPage() {
             })
 
             if (result.data?.id) {
-                router.push(`/editor?id=${result.data.id}`)
+                router.push(`/editor?id=${result.data.id}${workspace ? `&workspace=${workspace}` : ""}`)
             }
         } catch (error: any) {
             toast({
