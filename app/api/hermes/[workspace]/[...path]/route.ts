@@ -67,17 +67,20 @@ async function handleCampaigns(
 
   // GET /campaigns
   // Supports: ?status=draft|sending|completed
-  //           ?is_template=true   → master templates only
+  //           ?is_template=true        → master templates only
   //           ?email_type=campaign|automated|chain_step
+  //           ?parent_template_id=<uuid> → all children of a specific template
   if (method === "GET" && !campaignId) {
     const url = new URL(request.url);
     const status = url.searchParams.get("status");
     const isTemplate = url.searchParams.get("is_template");
     const emailType = url.searchParams.get("email_type");
+    const parentTemplateId = url.searchParams.get("parent_template_id");
     let query = supabase.from("campaigns").select("*").eq("workspace", workspace);
     if (status) query = query.eq("status", status);
     if (isTemplate !== null) query = query.eq("is_template", isTemplate === "true");
     if (emailType) query = query.eq("email_type", emailType);
+    if (parentTemplateId) query = query.eq("parent_template_id", parentTemplateId);
     const { data, error } = await query;
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
     return NextResponse.json(data);

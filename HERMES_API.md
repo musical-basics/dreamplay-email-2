@@ -21,6 +21,7 @@ https://dreamplay-email-2.vercel.app/api/hermes/{workspace}/{resource}
 | `musicalbasics` | Musical Basics audience |
 | `dreamplay_support` | DreamPlay support audience |
 | `crossover` | Crossover audience |
+| `concert_marketing` | Concert Marketing audience |
 
 > ⚠️ **Important:** Use the full slug (e.g. `dreamplay_marketing`, NOT `dreamplay`). Incorrect slugs return a `500` enum mismatch error.
 
@@ -60,9 +61,10 @@ List all campaigns. Supports optional query filters:
 
 | Query param | Values | Description |
 |---|---|---|
-| `status` | `draft`, `sending`, `completed` | Filter by send status |
-| `is_template` | `true` | Return master templates only |
-| `email_type` | `campaign`, `automated`, `chain_step` | Filter by email type |
+| `status` | `draft`, `sending`, `completed` | Filter by send status (server-side) |
+| `is_template` | `true` | Return master templates only (server-side) |
+| `email_type` | `campaign`, `automated`, `chain_step` | Filter by email type (server-side) |
+| `parent_template_id` | `<uuid>` | Return all children of a specific master template (server-side) |
 
 **Example — list drafts:**
 ```http
@@ -547,6 +549,7 @@ GET /api/hermes/{workspace}/campaigns
 | `dreamplay_support` | DreamPlay purchasers / customer support audience |
 | `musicalbasics` | Musical Basics general educational audience |
 | `crossover` | Intentionally overlapping cross-brand segments |
+| `concert_marketing` | Concert announcements, ticket promotions, event-driven campaigns |
 
 ### Practical implication
 

@@ -1,5 +1,5 @@
 import Link from "next/link"
-import { Mail, HeadphonesIcon, Music, ArrowRightLeft } from "lucide-react"
+import { Mail, HeadphonesIcon, Music, ArrowRightLeft, Mic } from "lucide-react"
 
 const workspaces = [
     {
@@ -33,6 +33,14 @@ const workspaces = [
         icon: ArrowRightLeft,
         color: "from-violet-500/20 to-violet-600/5 border-violet-500/30 hover:border-violet-400/60",
         iconColor: "text-violet-400",
+    },
+    {
+        name: "Concert Marketing",
+        slug: "concert_marketing",
+        description: "Concert announcements, ticket promotions, and event-driven audience campaigns.",
+        icon: Mic,
+        color: "from-rose-500/20 to-rose-600/5 border-rose-500/30 hover:border-rose-400/60",
+        iconColor: "text-rose-400",
     },
 ]
 
