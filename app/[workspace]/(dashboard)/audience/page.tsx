@@ -2282,6 +2282,7 @@ export default function AudienceManagerPage() {
                 open={isCsvImportOpen}
                 onOpenChange={setIsCsvImportOpen}
                 onComplete={fetchSubscribers}
+                workspace={workspace}
             />
         </div >
     )
