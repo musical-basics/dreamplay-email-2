@@ -43,15 +43,20 @@ export const sendCampaign = inngest.createFunction(
             const lockedSubscriberId = campaign.variable_values?.subscriber_id;
             const lockedSubscriberIds: string[] | undefined = campaign.variable_values?.subscriber_ids;
             const targetTag = campaign.variable_values?.target_tag;
+            const campaignWorkspace = campaign.workspace; // always scope to the campaign's workspace
+
             let query = supabase.from("subscribers").select("*").eq("status", "active");
 
             if (lockedSubscriberIds && lockedSubscriberIds.length > 0) {
+                // UUIDs are globally unique — workspace filter is a safety belt only
                 query = query.in("id", lockedSubscriberIds);
             } else if (lockedSubscriberId) {
                 query = query.eq("id", lockedSubscriberId);
             } else if (targetTag) {
-                // Filter by tag — only send to subscribers who have this tag
-                query = query.contains("tags", [targetTag]);
+                // Tag sends MUST be workspace-scoped — tags exist across all workspaces
+                query = query
+                    .contains("tags", [targetTag])
+                    .eq("workspace", campaignWorkspace);
             }
             // Exclude unsubscribed (redundant check but safe)
             query = query.neq('status', 'unsubscribed');
