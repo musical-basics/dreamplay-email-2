@@ -10,6 +10,7 @@
  *
  * Safe to call multiple times — idempotent by design:
  *   - Already-proxied Supabase URLs are left untouched.
+ *   - Images >MAX_BYTES are skipped (too large to embed safely in email).
  *   - Unknown content-types fall back to ".bin".
  */
 
@@ -19,6 +20,13 @@ import crypto from "crypto";
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SERVICE_KEY  = process.env.SUPABASE_SERVICE_KEY!;
 const BUCKET       = "email-images";
+
+/**
+ * Max image size we'll store. Gmail clips messages over ~102KB and email
+ * clients generally refuse to render images >5MB. We skip anything over
+ * 5MB and log a warning so the team knows to resize the source asset.
+ */
+const MAX_BYTES = 5 * 1024 * 1024; // 5 MB
 
 // Extension lookup for common MIME types
 const MIME_TO_EXT: Record<string, string> = {
@@ -60,8 +68,31 @@ export async function proxyImage(imageUrl: string): Promise<string> {
   const supabase = getSupabaseClient();
 
   try {
-    // 1. Download
-    const res = await fetch(imageUrl, { signal: AbortSignal.timeout(10_000) });
+    // ── Step 1: HEAD check to detect oversized images before downloading ──
+    // This avoids wasting bandwidth downloading a 7MB PNG only to reject it.
+    try {
+      const head = await fetch(imageUrl, {
+        method: "HEAD",
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (head.ok) {
+        const contentLength = head.headers.get("content-length");
+        if (contentLength && parseInt(contentLength, 10) > MAX_BYTES) {
+          console.warn(
+            `[ImageProxy] SKIPPED (${Math.round(parseInt(contentLength) / 1024 / 1024)}MB > 5MB limit): ${imageUrl}`
+          );
+          console.warn(
+            `[ImageProxy] ⚠️  ACTION REQUIRED: The source asset at ${imageUrl} is too large for email. Please re-export at ≤1920px width and <2MB.`
+          );
+          return imageUrl; // fall back to original — image will only load if R2 is public
+        }
+      }
+    } catch {
+      // HEAD failed (CORS, etc.) — proceed to full download anyway
+    }
+
+    // ── Step 2: Download ──
+    const res = await fetch(imageUrl, { signal: AbortSignal.timeout(15_000) });
     if (!res.ok) {
       console.warn(`[ImageProxy] Failed to fetch ${imageUrl} — ${res.status}, keeping original`);
       return imageUrl;
@@ -71,24 +102,34 @@ export async function proxyImage(imageUrl: string): Promise<string> {
     const ext  = MIME_TO_EXT[contentType] ?? "bin";
     const buf  = Buffer.from(await res.arrayBuffer());
 
-    // 2. Hash
+    // ── Step 3: Size gate (in case HEAD wasn't available) ──
+    if (buf.length > MAX_BYTES) {
+      console.warn(
+        `[ImageProxy] SKIPPED after download (${Math.round(buf.length / 1024 / 1024)}MB > 5MB): ${imageUrl}`
+      );
+      console.warn(
+        `[ImageProxy] ⚠️  ACTION REQUIRED: ${imageUrl} — re-export at ≤1920px width and <2MB before next send.`
+      );
+      return imageUrl;
+    }
+
+    // ── Step 4: Hash (deduplication key) ──
     const hash     = crypto.createHash("sha256").update(buf).digest("hex");
     const path     = `hashed/${hash}.${ext}`;
 
-    // 3. Check if already stored (deduplication)
+    // ── Step 5: Check if already stored ──
     const { data: existing } = await supabase.storage.from(BUCKET).list("hashed", {
       search: `${hash}.${ext}`,
       limit: 1,
     });
 
     if (existing && existing.length > 0) {
-      // Already exists — just return the public URL
       const { data: urlData } = supabase.storage.from(BUCKET).getPublicUrl(path);
       console.log(`[ImageProxy] Cache hit: ${hash}.${ext}`);
       return urlData.publicUrl;
     }
 
-    // 4. Upload (upsert: false — hash guarantees content identity)
+    // ── Step 6: Upload ──
     const { error: uploadErr } = await supabase.storage
       .from(BUCKET)
       .upload(path, buf, { contentType, upsert: false });
@@ -98,9 +139,9 @@ export async function proxyImage(imageUrl: string): Promise<string> {
       return imageUrl;
     }
 
-    // 5. Return permanent public URL
+    // ── Step 7: Return permanent public URL ──
     const { data: urlData } = supabase.storage.from(BUCKET).getPublicUrl(path);
-    console.log(`[ImageProxy] Stored new image: ${hash}.${ext} (was: ${imageUrl})`);
+    console.log(`[ImageProxy] Stored ${Math.round(buf.length / 1024)}KB: ${hash}.${ext} (was: ${imageUrl})`);
     return urlData.publicUrl;
 
   } catch (err: any) {
@@ -121,7 +162,7 @@ export async function proxyEmailImages(html: string): Promise<string> {
   if (!html) return html;
 
   // Extract all unique external image src values
-  const srcRegex = /src=["'](https?:\/\/[^"']+)["']/gi;
+  const srcRegex = /src=["'](https?:\/\/[^"']+)['"]/gi;
   const externalUrls = new Set<string>();
   let match: RegExpExecArray | null;
 
