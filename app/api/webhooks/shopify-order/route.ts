@@ -122,6 +122,48 @@ export async function POST(request: Request) {
 
         console.log(`[Shopify Webhook] ${existingUser ? "Updated" : "Created"} subscriber ${email} with Purchased tag (Order: ${orderName})`);
 
+        // ─── MOVE SUBSCRIBER TO dreamplay_support ────────────────────
+        // Purchasers are moved out of dreamplay_marketing into the support workspace.
+        // Since email is the unique key, this is a simple workspace column update.
+        const { error: moveErr } = await supabase
+            .from("subscribers")
+            .update({ workspace: "dreamplay_support", updated_at: new Date().toISOString() })
+            .eq("id", data.id);
+
+        if (moveErr) {
+            console.error("[Shopify Webhook] Failed to move subscriber to dreamplay_support:", moveErr.message);
+        } else {
+            console.log(`[Shopify Webhook] Moved ${email} from dreamplay_marketing → dreamplay_support`);
+
+            // Cancel any active marketing chains — they belong to the old workspace context
+            const { data: marketingProcesses } = await supabase
+                .from("chain_processes")
+                .select("id, history")
+                .eq("subscriber_id", data.id)
+                .in("status", ["active", "paused"]);
+
+            if (marketingProcesses && marketingProcesses.length > 0) {
+                for (const proc of marketingProcesses) {
+                    const history = proc.history || [];
+                    history.push({
+                        step_name: "System",
+                        action: "Chain Cancelled — Subscriber moved to dreamplay_support on purchase",
+                        timestamp: new Date().toISOString(),
+                    });
+                    await supabase
+                        .from("chain_processes")
+                        .update({ status: "cancelled", history, updated_at: new Date().toISOString() })
+                        .eq("id", proc.id);
+                    await inngest.send({ name: "chain.cancel", data: { processId: proc.id } });
+                }
+                console.log(`[Shopify Webhook] Cancelled ${marketingProcesses.length} marketing chain(s) for ${email}`);
+            }
+        }
+
+        // Trigger evaluation runs in the subscriber's new workspace (dreamplay_support if move succeeded)
+        const activeSubscriberId = data.id; // same row, just workspace updated
+        const activeWorkspace = moveErr ? workspace : "dreamplay_support";
+
         // ─── EVALUATE TRIGGERS FOR NEWLY ADDED TAGS ─────────────────
         const addedTags = mergedTags.filter(t => !previousTags.includes(t));
         let triggersFireCount = 0;
@@ -134,6 +176,7 @@ export async function POST(request: Request) {
                 .select("*")
                 .eq("trigger_type", "subscriber_tag")
                 .eq("is_active", true)
+                .eq("workspace", activeWorkspace)
                 .in("trigger_value", addedTags);
 
             if (tErr) {
@@ -163,7 +206,7 @@ export async function POST(request: Request) {
                             const { data: existingProcesses } = await supabase
                                 .from("chain_processes")
                                 .select("id, history")
-                                .eq("subscriber_id", data.id)
+                                .eq("subscriber_id", activeSubscriberId)
                                 .in("status", ["active", "paused"]);
 
                             if (existingProcesses && existingProcesses.length > 0) {
@@ -246,7 +289,7 @@ export async function POST(request: Request) {
                                 .from("chain_processes")
                                 .insert({
                                     chain_id: snapshot.id,
-                                    subscriber_id: data.id,
+                                    subscriber_id: activeSubscriberId,
                                     status: "active",
                                     current_step_index: 0,
                                     history: [{
@@ -269,7 +312,7 @@ export async function POST(request: Request) {
                                 data: {
                                     processId: proc.id,
                                     chainId: snapshot.id,
-                                    subscriberId: data.id,
+                                    subscriberId: activeSubscriberId,
                                     email,
                                     firstName: firstName || "",
                                 },
@@ -316,7 +359,8 @@ export async function POST(request: Request) {
 
         return NextResponse.json({
             success: true,
-            subscriber_id: data.id,
+            subscriber_id: activeSubscriberId,
+            workspace: activeWorkspace,
             is_new: !existingUser,
             order_name: orderName,
             triggers_fired: triggersFireCount,
