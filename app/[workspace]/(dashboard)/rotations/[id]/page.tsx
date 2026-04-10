@@ -224,7 +224,7 @@ export default function RotationDetailPage({ params }: { params: Promise<{ id: s
                             stat.childCampaigns.map((child: any) => (
                                 <Link
                                     key={child.id}
-                                    href={`/dashboard/${child.id}`}
+                                    href={`/${workspace}/dashboard/${child.id}`}
                                     className="flex items-center justify-between px-4 py-3 hover:bg-muted/20 transition-colors group"
                                 >
                                     <div className="min-w-0">

@@ -843,7 +843,7 @@ export default function AudienceManagerPage() {
                 setBulkSendMode(false)
 
                 if (result.data?.id) {
-                    router.push(`/dashboard/${result.data.id}`)
+                    router.push(`/${workspace}/dashboard/${result.data.id}`)
                 }
             } catch (error: any) {
                 toast({
@@ -878,7 +878,7 @@ export default function AudienceManagerPage() {
             })
 
             if (result.data?.id) {
-                router.push(`/dashboard/${result.data.id}`)
+                router.push(`/${workspace}/dashboard/${result.data.id}`)
             }
             setIsSelectCampaignOpen(false)
         } catch (error: any) {
