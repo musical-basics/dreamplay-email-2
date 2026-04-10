@@ -4,6 +4,7 @@ import { renderTemplate } from "@/lib/render-template";
 import { injectPreheader } from "@/lib/email-preheader";
 import { inlineStyles } from "@/lib/email-inline-styles";
 import { applyAllMergeTags } from "@/lib/merge-tags";
+import { proxyEmailImages } from "@/lib/image-proxy";
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 const supabaseAdmin = createClient(
@@ -152,8 +153,9 @@ export async function POST(request: Request) {
 
                     sendLog(controller, encoder, "info", `Created child campaign ${child.id}`);
 
-                    // Render HTML from template
-                    const globalHtml = renderTemplate(template.html_content || "", template.variable_values || {});
+                    // Render HTML from template and proxy any external images
+                    const renderedHtml = renderTemplate(template.html_content || "", template.variable_values || {});
+                    const globalHtml = await proxyEmailImages(renderedHtml); // snapshot externals → permanent Supabase URLs
                     const htmlWithPreheader = injectPreheader(globalHtml, template.variable_values?.preview_text);
                     // Inline CSS class styles into element style attributes (Gmail strips <style> blocks)
                     const htmlWithInlinedStyles = inlineStyles(htmlWithPreheader);

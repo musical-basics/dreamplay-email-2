@@ -7,6 +7,7 @@ import { applyAllMergeTags } from "@/lib/merge-tags";
 import { injectPreheader } from "@/lib/email-preheader";
 import { inlineStyles } from "@/lib/email-inline-styles";
 import { getDefaultLinks } from "@/app/actions/settings";
+import { proxyEmailImages } from "@/lib/image-proxy";
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 const supabase = createClient(
@@ -32,7 +33,12 @@ export const sendCampaign = inngest.createFunction(
             return data;
         });
 
-        // 2. Fetch Recipients
+        // 2. Proxy external images → permanent Supabase copies (runs once per campaign)
+        const proxiedHtml = await step.run("proxy-images", async () => {
+            return proxyEmailImages(campaign.html_content || "");
+        });
+
+        // 3. Fetch Recipients
         const recipients = await step.run("fetch-recipients", async () => {
             const lockedSubscriberId = campaign.variable_values?.subscriber_id;
             const lockedSubscriberIds: string[] | undefined = campaign.variable_values?.subscriber_ids;
@@ -70,7 +76,8 @@ export const sendCampaign = inngest.createFunction(
 
         // 4. Send Emails in Batches
         const result = await step.run("send-emails", async () => {
-            const globalHtmlContent = renderTemplate(campaign.html_content || "", campaign.variable_values || {});
+            // Use proxied HTML (external images already replaced with permanent Supabase URLs)
+            const globalHtmlContent = renderTemplate(proxiedHtml, campaign.variable_values || {});
 
             // Inject preview text (preheader) if set
             const htmlWithPreheader = injectPreheader(globalHtmlContent, campaign.variable_values?.preview_text);

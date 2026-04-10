@@ -5,6 +5,7 @@ import { renderTemplate } from "@/lib/render-template";
 import { createShopifyDiscount } from "@/app/actions/shopify-discount";
 import { applyAllMergeTagsWithLog } from "@/lib/merge-tags";
 import { inngest } from "@/inngest/client";
+import { proxyEmailImages } from "@/lib/image-proxy";
 
 
 const supabase = createClient(
@@ -447,6 +448,7 @@ async function executeTriggers(subscriberTags: string[], subscriberId: string, s
 
                 // Render template (campaign variables + smart blocks)
                 let renderedHtml = renderTemplate(campaign.html_content, assets, subscriberTags);
+                renderedHtml = await proxyEmailImages(renderedHtml); // snapshot externals → permanent Supabase URLs
 
                 // Apply merge tags (subscriber fields, global links, dynamic vars)
                 const { data: subscriberData } = await supabase

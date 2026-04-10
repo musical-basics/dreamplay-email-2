@@ -7,6 +7,7 @@ import { applyAllMergeTags } from "@/lib/merge-tags";
 import { injectPreheader } from "@/lib/email-preheader";
 import { inlineStyles } from "@/lib/email-inline-styles";
 import { getDefaultLinks } from "@/app/actions/settings";
+import { proxyEmailImages } from "@/lib/image-proxy";
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "https://email.dreamplaypianos.com";
@@ -41,6 +42,7 @@ export async function sendChainEmail(subscriberId: string, email: string, firstN
         email: email,
     };
     rawHtml = renderTemplate(dbTemplate.html_content || "", vars);
+    rawHtml = await proxyEmailImages(rawHtml); // snapshot external images → permanent Supabase URLs
     rawHtml = injectPreheader(rawHtml, dbTemplate.variable_values?.preview_text);
     // Inline CSS class styles into element style attributes (Gmail strips <style> blocks)
     rawHtml = inlineStyles(rawHtml);
