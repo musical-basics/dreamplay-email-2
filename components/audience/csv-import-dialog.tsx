@@ -5,7 +5,6 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Button } from "@/components/ui/button"
 import { Loader2, FileUp, X, CheckCircle2, AlertTriangle } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
-import { createClient } from "@/lib/supabase/client"
 
 interface CsvImportDialogProps {
     open: boolean
@@ -39,7 +38,6 @@ export function CsvImportDialog({
     const [csvImporting, setCsvImporting] = useState(false)
     const [importResult, setImportResult] = useState<{ added: number; updated: number; skipped: number } | null>(null)
     const { toast } = useToast()
-    const supabase = createClient()
 
     const handleClose = (o: boolean) => {
         onOpenChange(o)
@@ -74,7 +72,6 @@ export function CsvImportDialog({
                 const lines = text.split(/\r?\n/).filter(l => l.trim())
                 if (lines.length < 2) {
                     toast({ title: "CSV has no data rows", variant: "destructive" })
-                    setCsvImporting(false)
                     return
                 }
 
@@ -82,7 +79,6 @@ export function CsvImportDialog({
                 const emailIdx = headers.findIndex(h => h === "email" || h === "email_address" || h === "e-mail")
                 if (emailIdx === -1) {
                     toast({ title: "No 'email' column found in CSV", description: "First row must contain headers with an 'email' column.", variant: "destructive" })
-                    setCsvImporting(false)
                     return
                 }
 
@@ -104,106 +100,46 @@ export function CsvImportDialog({
                     if (h === "status") idxMap["status"] = i
                 })
 
-                const mergeFields = ["first_name", "last_name", "country", "country_code", "phone_code", "phone_number", "shipping_address1", "shipping_address2", "shipping_city", "shipping_zip", "shipping_province"] as const
-                type MergeField = typeof mergeFields[number]
+                const mergeFields = [
+                    "first_name", "last_name", "country", "country_code", "phone_code",
+                    "phone_number", "shipping_address1", "shipping_address2",
+                    "shipping_city", "shipping_zip", "shipping_province",
+                ] as const
 
-                const rows = lines.slice(1).map(parseCsvLine).filter(row => row[emailIdx]?.includes("@"))
+                const rawRows = lines.slice(1).map(parseCsvLine).filter(row => row[emailIdx]?.includes("@"))
 
-                const csvRows = rows.map(row => {
+                // Build structured rows to send to the server
+                const apiRows = rawRows.map(row => {
                     const rawTags = (row[idxMap["tags"]] || "").trim()
                     const rawStatus = (row[idxMap["status"]] || "").trim().toLowerCase()
-                    const parsed: Record<string, string | string[]> = {
+                    const parsed: Record<string, any> = {
                         email: row[emailIdx].toLowerCase().trim(),
+                        workspace,
                     }
                     for (const f of mergeFields) {
                         const val = idxMap[f] !== undefined ? (row[idxMap[f]] || "").trim() : ""
                         parsed[f] = f === "shipping_zip" ? val.replace(/'/g, "") : val
                     }
-                    parsed._tags = rawTags ? rawTags.split(/[;,]+/).map((t: string) => t.trim()).filter(Boolean) : []
-                    parsed._status = (["active", "inactive", "unsubscribed", "bounced"].includes(rawStatus) ? rawStatus : "")
+                    parsed.tags = rawTags ? rawTags.split(/[;,]+/).map((t: string) => t.trim()).filter(Boolean) : []
+                    parsed.status = ["active", "inactive", "unsubscribed", "bounced"].includes(rawStatus) ? rawStatus : "active"
                     return parsed
                 })
 
-                // Fetch existing subscribers in THIS WORKSPACE in batches of 500
-                const allEmails = csvRows.map(r => r.email as string)
-                const existingMap = new Map<string, any>()
-                for (let i = 0; i < allEmails.length; i += 500) {
-                    const batch = allEmails.slice(i, i + 500)
-                    const { data } = await supabase
-                        .from("subscribers")
-                        .select("*")
-                        .in("email", batch)
-                        .eq("workspace", workspace)  // ✅ scoped to this workspace
-                    if (data) {
-                        for (const row of data) {
-                            existingMap.set(row.email, row)
-                        }
-                    }
+                // Send to server-side API (uses service role key — bypasses RLS, safe upsert)
+                const res = await fetch("/api/import-subscribers", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ workspace, rows: apiRows }),
+                })
+
+                const result = await res.json()
+
+                if (!res.ok) {
+                    toast({ title: "Import failed", description: result.error ?? "Unknown error", variant: "destructive" })
+                    return
                 }
 
-                const toInsert: any[] = []
-                const toUpdate: { id: string; payload: any }[] = []
-
-                for (const csvRow of csvRows) {
-                    const email = csvRow.email as string
-                    const existing = existingMap.get(email)
-                    const csvTags = csvRow._tags as string[]
-                    const csvStatus = csvRow._status as string
-
-                    if (existing) {
-                        // UPDATE: already exists in this workspace — merge profile fields
-                        const updates: Record<string, any> = {}
-                        for (const f of mergeFields) {
-                            const csvVal = csvRow[f] as string
-                            if (csvVal) updates[f] = csvVal
-                        }
-                        if (csvTags.length > 0) {
-                            const existingTags: string[] = existing.tags || []
-                            updates.tags = [...new Set([...existingTags, ...csvTags])]
-                        }
-                        if (csvStatus) updates.status = csvStatus
-                        if (Object.keys(updates).length > 0) {
-                            toUpdate.push({ id: existing.id, payload: updates })
-                        }
-                    } else {
-                        // INSERT: new row in this workspace (email may exist in other workspaces — that's fine)
-                        const newSub: Record<string, any> = { email, workspace }
-                        for (const f of mergeFields) {
-                            newSub[f] = (csvRow[f] as string) || ""
-                        }
-                        newSub.tags = csvTags
-                        newSub.status = csvStatus || "active"
-                        toInsert.push(newSub)
-                    }
-                }
-
-                let addedCount = 0
-                let updatedCount = 0
-
-                // Insert new subscribers in batches
-                for (let i = 0; i < toInsert.length; i += 500) {
-                    const chunk = toInsert.slice(i, i + 500)
-                    const { error } = await supabase.from("subscribers").insert(chunk)
-                    if (error) {
-                        toast({ title: "Error inserting new subscribers", description: error.message, variant: "destructive" })
-                        setCsvImporting(false)
-                        return
-                    }
-                    addedCount += chunk.length
-                }
-
-                // Update existing subscribers
-                for (const { id, payload } of toUpdate) {
-                    const { error } = await supabase.from("subscribers").update(payload).eq("id", id)
-                    if (error) {
-                        console.error(`Failed to update subscriber ${id}:`, error.message)
-                    } else {
-                        updatedCount++
-                    }
-                }
-
-                const skipped = csvRows.length - addedCount - updatedCount
-                setImportResult({ added: addedCount, updated: updatedCount, skipped })
+                setImportResult({ added: result.added, updated: result.updated, skipped: result.skipped })
                 onComplete()
             } finally {
                 setCsvImporting(false)
