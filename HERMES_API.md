@@ -456,3 +456,103 @@ All errors return: `{ "error": "description" }`
 4. **Preview analytics** — `GET /campaigns/{id}/analytics` for any past campaign context
 5. **Send it** — `POST /campaigns/{id}/send` (or with `scheduledAt` for scheduled delivery)
 6. **Tag responders** — `POST /subscribers/bulk-tag` based on engagement
+
+---
+
+## Campaign Classification: Master Templates vs Child Campaigns
+
+> This is the most important concept for any agent that reads or creates campaigns.
+
+All campaigns live in a **single `campaigns` table**. Their role is determined by two fields:
+
+### Field reference
+
+| Field | Master Template | Child Campaign |
+|---|---|---|
+| `is_template` | `true` | `false` |
+| `is_ready` | `true` (when ready to use) | not meaningful |
+| `parent_template_id` | `null` | UUID pointing to the master template |
+| `status` | always `draft` (never sent) | `draft` → `completed` after send |
+| `variable_values.subscriber_id` | not set | locked to a specific subscriber (1:1 sends) |
+| `variable_values.subscriber_ids` | not set | array of subscriber UUIDs (bulk sends) |
+| `total_opens`, `total_clicks` | always 0 | real analytics, populated after send |
+
+### Mental model
+
+```
+Master Template (is_template=true, status=draft, parent_template_id=null)
+    │
+    ├── Child Campaign #1 (is_template=false, status=completed, parent_template_id=<template_id>)
+    │       → sent to john@example.com on 2026-03-01
+    │
+    ├── Child Campaign #2 (is_template=false, status=completed, parent_template_id=<template_id>)
+    │       → sent to jane@example.com on 2026-03-15
+    │
+    └── Child Campaign #3 (is_template=false, status=draft, parent_template_id=<template_id>)
+            → drafted but not yet sent
+```
+
+**The master template is never sent directly and is never marked `completed`.** Only children get sent and accumulate analytics.
+
+### How children are created
+
+| Trigger | Creates | Name format |
+|---|---|---|
+| Send to one subscriber | 1 child, `subscriber_id` locked | `"Template Name (for email@example.com)"` |
+| Bulk send to multiple | 1 child, `subscriber_ids` array | `"Template Name — Bulk Send Apr 10, 2026 (47 recipients)"` |
+| Duplicate button | 1 draft child, no subscriber lock | `"Copy of Template Name"` |
+
+### Recommended queries for agents
+
+```http
+# Get all master templates (the reusable designs)
+GET /api/hermes/{workspace}/campaigns?is_template=true
+
+# Get all completed (sent) campaigns with analytics
+GET /api/hermes/{workspace}/campaigns?status=completed
+
+# Find all child campaigns derived from a specific template
+# (filter client-side on parent_template_id == "<template_uuid>")
+GET /api/hermes/{workspace}/campaigns
+```
+
+### Key rules for agents when drafting new campaigns
+
+1. **Always start from a master template** — fetch `GET /campaigns?is_template=true`, pick the right template, copy its `html_content` and `variable_values` (minus `subscriber_id`), and `POST /campaigns` as a new draft. Set `parent_template_id` to the template's ID in your POST body.
+
+2. **Do not edit a master template's `html_content`** via PATCH unless you intend to update the design for all future sends. Edit child campaigns instead.
+
+3. **Read analytics only from children** — a template's `total_opens` / `total_clicks` will always be 0. To understand campaign performance, query completed child campaigns (those with `status=completed` and the relevant `parent_template_id`).
+
+4. **To understand what was sent to a subscriber** — call `GET /subscribers/{id}/history` which returns all their sent history entries linked to campaign names and subject lines.
+
+---
+
+## Multi-Workspace Audience Model
+
+> As of 2026-04-10, the platform supports the same email address in multiple workspaces as independent subscriber rows.
+
+### Key facts for agents
+
+- **Campaigns are always workspace-scoped.** A campaign in `musicalbasics` only sends to subscribers in `musicalbasics`.
+- **A person can exist in multiple workspaces.** The same `email` can have a row in `musicalbasics` AND `dreamplay_marketing` — these are completely independent records with separate status, tags, and send history.
+- **Unsubscribes are workspace-scoped.** If `jane@example.com` unsubscribes from a Musical Basics email, her `musicalbasics` row is marked `unsubscribed`. Her `dreamplay_marketing` row is unaffected.
+- **When querying subscribers**, always use the correct workspace slug in the URL — the API automatically scopes to that workspace only.
+
+### Workspace slugs
+
+| Slug | Audience |
+|---|---|
+| `dreamplay_marketing` | DreamPlay promotional / announcement audience |
+| `dreamplay_support` | DreamPlay purchasers / customer support audience |
+| `musicalbasics` | Musical Basics general educational audience |
+| `crossover` | Intentionally overlapping cross-brand segments |
+
+### Practical implication
+
+If you want to email the same person about both Musical Basics content AND DreamPlay products, they need a subscriber row in each relevant workspace. To check which workspaces a person is in, search their email across multiple workspace endpoints:
+
+```http
+GET /api/hermes/musicalbasics/subscribers?search=jane@example.com
+GET /api/hermes/dreamplay_marketing/subscribers?search=jane@example.com
+```
