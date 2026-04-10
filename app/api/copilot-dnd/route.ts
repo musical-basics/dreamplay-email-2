@@ -2,6 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 import Anthropic from "@anthropic-ai/sdk";
 import { NextResponse } from "next/server";
 import { getAllContextForAudience, formatContextForPrompt } from "@/app/actions/settings";
+import { VARIABLE_RULES_PROMPT } from "@/lib/variable-rules";
 
 // Allow up to 2 minutes for AI model response (prevents Vercel timeout → "Error: terminated")
 export const maxDuration = 120;
@@ -52,12 +53,14 @@ VALID BLOCK TYPES AND THEIR PROPS:
 7. "social" — { networks: [{ platform: "facebook"|"instagram"|"twitter"|"youtube"|"linkedin"|"tiktok", url: string }], alignment: "left"|"center"|"right", iconSize: number }
 
 RULES:
-- All image src values MUST be mustache variables like {{hero_src}}, {{product_img}}, etc.
+- All image src values MUST follow the image variable naming rules below.
 - All link URLs MUST be mustache variables like {{main_cta_url}}, {{hero_link_url}}
-- **IMPORTANT CTA URL NAMING:** The PRIMARY call-to-action link MUST always use {{main_cta_url}}. If there is only one CTA button, use {{main_cta_url}}. If there are multiple CTA buttons pointing to the SAME destination, they should ALL use {{main_cta_url}}. Only create additional URL variables (e.g. {{secondary_cta_url}}) when different buttons genuinely link to DIFFERENT pages.
+- **IMPORTANT CTA URL NAMING:** The PRIMARY call-to-action link MUST always use {{main_cta_url}}.
 - All text/copy MUST be hardcoded (NOT mustache variables)
 - Generate unique IDs for each block (e.g. "block-heading-1", "block-text-1")
 - NO EM-DASHES in any text
+
+${VARIABLE_RULES_PROMPT}
 `;
 
 export async function POST(req: Request) {

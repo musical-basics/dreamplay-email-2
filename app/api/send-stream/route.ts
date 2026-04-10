@@ -6,6 +6,7 @@ import { createShopifyDiscount } from "@/app/actions/shopify-discount";
 import { applyAllMergeTags, applyAllMergeTagsWithLog } from "@/lib/merge-tags";
 import { injectPreheader } from "@/lib/email-preheader";
 import { proxyEmailImages } from "@/lib/image-proxy";
+import { STANDARD_TAGS } from "@/lib/variable-rules";
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
@@ -57,7 +58,7 @@ export async function POST(request: Request) {
                 sendLog(controller, encoder, "info", `Tracking flags — click: ${clickTracking}, open: ${openTracking}, resendClick: ${resendClickTracking}, resendOpen: ${resendOpenTracking}`);
 
                 // Render global template
-                const subscriberVars = ["first_name", "last_name", "email", "unsubscribe_url", "unsubscribe_link_url", "unsubscribe_link"];
+                const subscriberVars = STANDARD_TAGS;
                 const globalAssets = Object.fromEntries(
                     Object.entries(campaign.variable_values || {}).filter(([key]) => !subscriberVars.includes(key))
                 ) as Record<string, string>;

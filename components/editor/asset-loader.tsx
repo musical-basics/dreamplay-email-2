@@ -17,8 +17,15 @@ import { useSearchParams, useParams } from "next/navigation"
 import { Upload, ImageIcon, ArrowLeft, Bookmark } from "lucide-react"
 import { AssetPickerModal } from "./asset-picker-modal"
 import { getDefaultLinks, getCustomLinks, type DefaultLinks, type CustomLink } from "@/app/actions/settings"
-
-const STANDARD_TAGS = ["first_name", "last_name", "email", "subscriber_id", "location_city", "location_country", "discount_code", "unsubscribe_url", "unsubscribe_link", "unsubscribe_link_url"]
+import {
+    STANDARD_TAGS,
+    isImageVariable,
+    isLinkVariable,
+    isTextAreaVariable,
+    isFitVariable,
+    findPairedLinkVar,
+    findPairedImageVar,
+} from "@/lib/variable-rules"
 
 interface AssetLoaderProps {
     variables: string[]
@@ -71,64 +78,6 @@ export function AssetLoader({ variables, assets, onUpdateAsset, showBackButton =
             .map(cl => ({ label: cl.label, url: cl.url })),
     ]
 
-    const isImageVariable = (variable: string) => {
-        const lower = variable.toLowerCase()
-        if (lower.endsWith("_fit")) return false
-        if (lower.endsWith("_link_url") || lower.includes("link_url")) return false
-        // Exclude known page/action link variables
-        if (lower === "unsubscribe_url" || lower === "privacy_url" || lower === "contact_url" ||
-            lower === "about_url" || lower === "homepage_url" || lower === "shipping_url" ||
-            lower === "main_cta_url" || lower === "crowdfunding_cta_url") return false
-        return lower.includes("image") || lower.includes("url") || lower.endsWith("_src") || lower.endsWith("_bg") || lower.endsWith("_logo") || lower.endsWith("_icon") || lower.endsWith("_img")
-    }
-
-    const isLinkVariable = (variable: string) => {
-        const lower = variable.toLowerCase()
-        return lower.endsWith("_link_url") || lower.includes("link_url")
-    }
-
-    const isTextAreaVariable = (variable: string) => {
-        const lower = variable.toLowerCase()
-        return lower.includes("text") || lower.includes("paragraph")
-    }
-
-    const isFitVariable = (variable: string) => {
-        return variable.toLowerCase().endsWith("_fit")
-    }
-
-    // Find the matching image variable for a link variable
-    // e.g. "lifestyle_link_url" → looks for "lifestyle_img", "lifestyle_src", etc.
-    const findPairedImageVar = (linkVar: string): string | null => {
-        const prefix = linkVar.replace(/_?link_url$/i, "")
-        if (!prefix) return null
-        return variables.find(v => {
-            const lower = v.toLowerCase()
-            return lower.startsWith(prefix.toLowerCase()) && isImageVariable(v)
-        }) || null
-    }
-
-    // Find the matching link variable for an image variable
-    // Handles: "lifestyle_img" + "lifestyle_link_url", "video_thumbnail_src" + "video_link_url"
-    const findPairedLinkVar = (imageVar: string): string | null => {
-        // Extract prefix: "lifestyle_img" → "lifestyle", "hero_src" → "hero", "video_thumbnail_src" → "video_thumbnail"
-        const prefix = imageVar.replace(/(_img|_src|_bg|_logo|_icon|_image|_thumbnail_src|_thumbnail)$/i, "")
-        if (!prefix || prefix === imageVar) return null
-
-        // Look for exact match first: e.g. lifestyle → lifestyle_link_url
-        const exactMatch = variables.find(v => {
-            const lower = v.toLowerCase()
-            return lower === `${prefix.toLowerCase()}_link_url` || lower === `${prefix.toLowerCase()}link_url`
-        })
-        if (exactMatch) return exactMatch
-
-        // Fallback: check if any link var's prefix is a prefix of the image var
-        // e.g. video_link_url → prefix "video" is a prefix of "video_thumbnail_src"
-        return variables.find(v => {
-            if (!isLinkVariable(v)) return false
-            const linkPrefix = v.replace(/_?link_url$/i, "").toLowerCase()
-            return linkPrefix && prefix.toLowerCase().startsWith(linkPrefix)
-        }) || null
-    }
 
     const handleImageUpload = (variable: string) => {
         setActiveVariable(variable)
@@ -144,7 +93,7 @@ export function AssetLoader({ variables, assets, onUpdateAsset, showBackButton =
     const pairedLinkVars = new Set<string>()
     variables.forEach(v => {
         if (isImageVariable(v)) {
-            const linkVar = findPairedLinkVar(v)
+            const linkVar = findPairedLinkVar(v, variables)
             if (linkVar) pairedLinkVars.add(linkVar)
         }
     })
@@ -189,7 +138,7 @@ export function AssetLoader({ variables, assets, onUpdateAsset, showBackButton =
                     displayVariables.map((variable) => {
                         // ─── Image variable: render as a grouped card with optional link + fit ───
                         if (isImageVariable(variable)) {
-                            const pairedLink = findPairedLinkVar(variable)
+                            const pairedLink = findPairedLinkVar(variable, variables)
                             return (
                                 <div key={variable} className="rounded-lg border-l-4 border-l-primary/60 border border-border bg-muted/50 p-3 space-y-3">
                                     {/* Image source */}

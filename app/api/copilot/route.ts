@@ -3,6 +3,7 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import Anthropic from "@anthropic-ai/sdk";
 import { NextResponse } from "next/server";
 import { getAllContextForAudience, formatContextForPrompt } from "@/app/actions/settings";
+import { VARIABLE_RULES_PROMPT, STANDARD_TAGS } from "@/lib/variable-rules";
 
 // Allow up to 2 minutes for AI model response (prevents Vercel timeout → "Error: terminated")
 export const maxDuration = 120;
@@ -174,14 +175,14 @@ Reply ONLY with the exact word "SIMPLE" or "COMPLEX".`;
     1. **LAYOUT:** Use HTML <table>, <tr>, <td> for structure. No Flexbox/Grid.
     2. **WIDTHS:** Explicitly set width="100%" or specific pixels.
     3. **VARIABLES:** Preserve {{mustache_vars}}.
-    4. **IMAGE VARIABLES:** When adding images with {{mustache}} variables, the variable name MUST end with one of these suffixes: _src, _bg, _logo, _icon, _img — or contain the word "image" or "url". For example: {{hero_src}}, {{product_bg}}, {{banner_img}}. This ensures the Asset Loader recognizes them as images and shows the upload button. Additionally, ALWAYS wrap the image in a clickable link using a corresponding _link_url variable. For example: <a href="{{hero_link_url}}"><img src="{{hero_src}}" /></a>. This lets the user set the link destination in the Asset Loader.
+    4. **IMAGE & LINK VARIABLES:** ${VARIABLE_RULES_PROMPT}
     5. **NO EM-DASHES:** Never use em-dashes (—) in any copy or text you write. Use commas, periods, or semicolons instead.
     6. **READABLE COPY FORMATTING:** When writing or editing paragraph text/copy, add sparse inline formatting to improve scannability. Use \`<strong>\` to bold 1-2 key value propositions or outcomes per paragraph (the phrases you want the reader to remember). Use \`<u>\` to underline one supporting detail or benefit phrase per paragraph. Don't overdo it: most sentences should remain unformatted. The goal is to let a skimming reader grasp the main points from the bold text alone.
     
     ### TEMPLATE CREATION DEFAULTS:
     When asked to create a NEW email template from scratch or from a reference image:
     - All text/copy MUST be hardcoded directly in the HTML (not mustache variables). Write the actual words into the template.
-    - All image sources (src) MUST use {{mustache_variable}} names (e.g. {{hero_src}}, {{product_img}}).
+    - All image sources (src) MUST use {{mustache_variable}} names following the image naming rules above.
     - All links (href on <a> tags) MUST use {{mustache_variable}} names (e.g. {{main_cta_url}}, {{hero_link_url}}).
     - **IMPORTANT CTA URL NAMING:** The PRIMARY call-to-action link MUST always use {{main_cta_url}}. If there is only one CTA button, use {{main_cta_url}}. If there are multiple CTA buttons pointing to the SAME destination, they should ALL use {{main_cta_url}}. Only create additional URL variables (e.g. {{secondary_cta_url}}) when different buttons genuinely link to DIFFERENT pages. This ensures discount codes auto-attach correctly.
     - This means the user only needs to load assets (images + links) via the Asset Loader, while the text is baked into the HTML.
