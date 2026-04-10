@@ -94,6 +94,17 @@ async function handleCampaigns(
     return NextResponse.json(data);
   }
 
+  // GET /campaigns/:id/sent-history — full recipient list with subscriber details
+  if (method === "GET" && campaignId && action === "sent-history") {
+    const { data, error } = await supabase
+      .from("sent_history")
+      .select("subscriber_id, sent_at, resend_email_id, subscribers(email, first_name, last_name, tags)")
+      .eq("campaign_id", campaignId)
+      .order("sent_at", { ascending: false });
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json(data);
+  }
+
   // GET /campaigns/:id
   if (method === "GET" && campaignId && !action) {
     const { data, error } = await supabase
@@ -144,6 +155,38 @@ async function handleCampaigns(
       // body is optional
     }
 
+    // ─── SAFETY GUARD: Require explicit recipient targeting ───────────────────
+    // Without one of these fields, send-campaign.ts would blast ALL active
+    // subscribers across the entire database. The Hermes API never allows
+    // untargeted sends — this must be set deliberately by the caller.
+    const { data: campaignCheck } = await supabase
+      .from("campaigns")
+      .select("variable_values, name")
+      .eq("id", campaignId)
+      .single();
+
+    const vv = campaignCheck?.variable_values || {};
+    const hasTargeting =
+      vv.subscriber_id ||
+      (Array.isArray(vv.subscriber_ids) && vv.subscriber_ids.length > 0) ||
+      vv.target_tag;
+
+    if (!hasTargeting) {
+      return NextResponse.json(
+        {
+          error: "UNSAFE_SEND_BLOCKED",
+          message:
+            "Campaign has no recipient targeting configured. Set variable_values.subscriber_ids, " +
+            "variable_values.subscriber_id, or variable_values.target_tag before sending. " +
+            "Without targeting, this would send to all active subscribers.",
+          campaign_name: campaignCheck?.name,
+          fix: "PATCH /campaigns/" + campaignId + " with { variable_values: { subscriber_ids: ['<uuid>'] } }",
+        },
+        { status: 400 }
+      );
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     if (body.scheduledAt) {
       // Scheduled send
       await supabase
@@ -179,6 +222,7 @@ async function handleCampaigns(
 
   return notFound("Campaign endpoint not found");
 }
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CHUNK 3: CHAINS (Drip Sequences)
@@ -337,6 +381,27 @@ async function handleSubscribers(
     return NextResponse.json(data);
   }
 
+  // GET /subscribers/:id/history — sent emails + engagement events
+  if (method === "GET" && subscriberId && action === "history") {
+    const [sentRes, eventsRes] = await Promise.all([
+      supabase
+        .from("sent_history")
+        .select("campaign_id, sent_at, resend_email_id, campaigns(name, subject_line)")
+        .eq("subscriber_id", subscriberId)
+        .order("sent_at", { ascending: false }),
+      supabase
+        .from("subscriber_events")
+        .select("event_type, occurred_at, metadata")
+        .eq("subscriber_id", subscriberId)
+        .order("occurred_at", { ascending: false }),
+    ]);
+    if (sentRes.error) return NextResponse.json({ error: sentRes.error.message }, { status: 500 });
+    return NextResponse.json({
+      sent: sentRes.data || [],
+      events: eventsRes.data || [],
+    });
+  }
+
   // GET /subscribers/:id
   if (method === "GET" && subscriberId && !action) {
     const { data, error } = await supabase
@@ -345,6 +410,23 @@ async function handleSubscribers(
       .eq("id", subscriberId)
       .single();
     if (error) return notFound("Subscriber not found");
+    return NextResponse.json(data);
+  }
+
+  // PATCH /subscribers/:id — update profile fields (never overwrites tags via this endpoint)
+  // To modify tags use POST /subscribers or POST /subscribers/bulk-tag instead.
+  if (method === "PATCH" && subscriberId && !action) {
+    const body = await request.json();
+    // Guard: strip tags from patch body so tags are only ever managed via the webhook proxy
+    // (ensures tag colors, trigger evaluation, and identity stitching always run)
+    const { tags: _stripped, workspace: _ws, ...safeFields } = body;
+    const { data, error } = await supabase
+      .from("subscribers")
+      .update({ ...safeFields, updated_at: new Date().toISOString() })
+      .eq("id", subscriberId)
+      .select()
+      .single();
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
     return NextResponse.json(data);
   }
 
