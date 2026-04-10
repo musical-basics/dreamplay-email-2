@@ -5,6 +5,7 @@ import { addPlayButtonsToVideoThumbnails } from "@/lib/video-overlay";
 import { createShopifyDiscount } from "@/app/actions/shopify-discount";
 import { applyAllMergeTags, applyAllMergeTagsWithLog } from "@/lib/merge-tags";
 import { injectPreheader } from "@/lib/email-preheader";
+import { proxyEmailImages } from "@/lib/image-proxy";
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
@@ -62,7 +63,19 @@ export async function POST(request: Request) {
                 ) as Record<string, string>;
                 const globalHtmlContent = renderTemplate(campaign.html_content || "", globalAssets);
                 const htmlWithPreheader = injectPreheader(globalHtmlContent, campaign.variable_values?.preview_text);
-                let htmlContent = htmlWithPreheader;
+
+                // ── Proxy external images → permanent Supabase URLs ───────────
+                sendLog(controller, encoder, "info", "Proxying images to permanent CDN URLs...");
+                const htmlProxied = await proxyEmailImages(htmlWithPreheader);
+                const proxiedCount = (htmlProxied.match(/supabase\.co/g) || []).length;
+                const originalCount = (htmlWithPreheader.match(/supabase\.co/g) || []).length;
+                const newlyProxied = proxiedCount - originalCount;
+                if (newlyProxied > 0) {
+                    sendLog(controller, encoder, "success", `✅ ${newlyProxied} image(s) proxied to Supabase CDN`);
+                } else {
+                    sendLog(controller, encoder, "warn", "⚠️  No images were proxied — check Vercel logs for proxy errors");
+                }
+                let htmlContent = htmlProxied;
 
                 // Child campaign for templates
                 let trackingCampaignId = campaignId;
