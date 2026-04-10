@@ -6,6 +6,7 @@ import { AudienceCard, Audience } from "./audience-card"
 import { SenderIdentityCard } from "./sender-identity-card"
 import { PreflightCheckCard } from "./preflight-check-card"
 import { DiscountAuditCard } from "./discount-audit-card"
+import { ImageHealthCard } from "./image-health-card"
 
 import { LaunchpadCard } from "./launchpad-card"
 import { EmailPreviewCard } from "./email-preview-card"
@@ -280,6 +281,8 @@ export function CampaignLaunchChecks({ campaign, audience, targetSubscriber }: C
                             subjectLine={campaign.subject_line}
                             previewText={campaign.variable_values?.preview_text ?? null}
                         />
+
+                        <ImageHealthCard htmlContent={campaign.html_content} />
 
                         {showConsole && (
                             <SendConsoleCard logs={sendLogs} isStreaming={isStreaming} />
