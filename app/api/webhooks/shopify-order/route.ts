@@ -127,7 +127,7 @@ export async function POST(request: Request) {
         // Since email is the unique key, this is a simple workspace column update.
         const { error: moveErr } = await supabase
             .from("subscribers")
-            .update({ workspace: "dreamplay_support", updated_at: new Date().toISOString() })
+            .update({ workspace: "dreamplay_support" })
             .eq("id", data.id);
 
         if (moveErr) {
