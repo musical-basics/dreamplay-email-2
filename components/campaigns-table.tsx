@@ -763,8 +763,8 @@ export function CampaignsTable({ campaigns = [], loading, onRefresh, title = "Re
                                                 >
                                                     <Link href={
                                                         campaign.html_content?.includes('"_marker":"__dnd_blocks__"')
-                                                            ? `/dnd-editor?id=${campaign.id}`
-                                                            : `/editor?id=${campaign.id}`
+                                                            ? `/dnd-editor?id=${campaign.id}${workspace ? `&workspace=${workspace}` : ""}`
+                                                            : `/editor?id=${campaign.id}${workspace ? `&workspace=${workspace}` : ""}`
                                                     }>
                                                         <PenLine className="w-4 h-4" />
                                                     </Link>
