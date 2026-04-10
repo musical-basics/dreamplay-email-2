@@ -420,19 +420,47 @@ Create a new trigger:
 
 ### `POST /api/hermes/{workspace}/copilot`
 
-Ask the LLM copilot to generate or edit email HTML.
+Ask the LLM copilot to generate or edit email HTML. The copilot **automatically loads this workspace's brand context and default links** from the Settings page and injects them into its system prompt — so it knows who the audience is, what tone to use, and what URLs to use for CTAs.
 
 ```json
 {
   "messages": [
-    { "role": "user", "content": "Write a promotional email for our spring sale" }
+    { "role": "user", "content": "Write a concert announcement email for our spring piano recital" }
   ],
   "currentHtml": "<html>...</html>",
   "model": "auto"
 }
 ```
 
-Returns the copilot's response (same shape as `/api/copilot`).
+Returns: `{ "content": "<html>...</html>", "usage": { ... } }`
+
+### Workspace → Copilot context mapping
+
+The workspace in the URL determines which context is loaded:
+
+| Workspace slug | Copilot context loaded |
+|---|---|
+| `dreamplay_marketing` | DreamPlay brand context + DreamPlay links |
+| `dreamplay_support` | DreamPlay brand context + DreamPlay links |
+| `musicalbasics` | MusicalBasics brand context + MusicalBasics links |
+| `crossover` | Both MusicalBasics AND DreamPlay contexts combined |
+| `concert_marketing` | Concert Marketing context + Concert Marketing links |
+
+### Configuring context for a workspace
+
+Context is set by a human in the Settings page at `/{workspace}/settings`. It's stored in the `app_settings` table under the key `context_{workspace}`. Default links are stored under `links_{workspace}`.
+
+If no context has been saved for a workspace yet, the copilot will generate emails without any brand-specific guidance — so **always set the context before running your first campaign in a new workspace.**
+
+### Copilot model tiers
+
+Pass `"model": "auto"` to let the system use the configured default. You can also pass a specific model ID:
+
+```json
+{ "model": "claude-opus-4-6" }        // High compute
+{ "model": "claude-sonnet-4-6" }      // Medium compute  
+{ "model": "claude-haiku-4-5-20251001" } // Low compute / fast drafts
+```
 
 ---
 
@@ -452,12 +480,24 @@ All errors return: `{ "error": "description" }`
 
 ## Typical Agent Workflow
 
+### Standard send workflow
+
 1. **Research audience** — `GET /subscribers?tag=newsletter` to see who's subscribed
 2. **Read templates** — `GET /campaigns?is_template=true` to find reusable HTML
 3. **Draft a campaign** — `POST /campaigns` with subject + HTML content
 4. **Preview analytics** — `GET /campaigns/{id}/analytics` for any past campaign context
 5. **Send it** — `POST /campaigns/{id}/send` (or with `scheduledAt` for scheduled delivery)
 6. **Tag responders** — `POST /subscribers/bulk-tag` based on engagement
+
+### New workspace / first-time workflow
+
+> Use this when working in a workspace that has no prior campaigns (e.g. `concert_marketing` on first use).
+
+1. **Verify context is set** — check `/{workspace}/settings` in the UI. If blank, the AI will draft without brand guidance. Set it before proceeding.
+2. **Generate HTML via copilot** — `POST /copilot` with a clear brief including event name, date, venue, ticket link, and tone.
+3. **Create a master template** — `POST /campaigns` with `is_template: true`. This is the reusable design.
+4. **Create a child send** — `POST /campaigns` with `parent_template_id` pointing to the template, then target your audience via `variable_values.subscriber_ids`.
+5. **Send** — `POST /campaigns/{child_id}/send`.
 
 ---
 
@@ -513,9 +553,11 @@ GET /api/hermes/{workspace}/campaigns?is_template=true
 # Get all completed (sent) campaigns with analytics
 GET /api/hermes/{workspace}/campaigns?status=completed
 
-# Find all child campaigns derived from a specific template
-# (filter client-side on parent_template_id == "<template_uuid>")
-GET /api/hermes/{workspace}/campaigns
+# Get all draft campaigns (not yet sent)
+GET /api/hermes/{workspace}/campaigns?status=draft
+
+# Get all children of a specific master template (direct server-side filter)
+GET /api/hermes/{workspace}/campaigns?parent_template_id=<template_uuid>
 ```
 
 ### Key rules for agents when drafting new campaigns
@@ -558,4 +600,51 @@ If you want to email the same person about both Musical Basics content AND Dream
 ```http
 GET /api/hermes/musicalbasics/subscribers?search=jane@example.com
 GET /api/hermes/dreamplay_marketing/subscribers?search=jane@example.com
+GET /api/hermes/concert_marketing/subscribers?search=jane@example.com
+```
+
+---
+
+## Concert Marketing: Quick-Start Reference
+
+> Use this section when your agent is creating its first Concert Marketing email.
+
+### Pre-flight checklist
+
+- [ ] **Context set** — go to `/concert_marketing/settings` and fill in the Concert Marketing Context textarea with brand voice, event type, and audience description
+- [ ] **Links configured** — set at least `homepage_url` and `main_cta_url` (ticket purchase page) under Concert Marketing Links in Settings
+- [ ] **Subscribers imported** — use `/concert_marketing/audience` → Import CSV to add your concert audience
+
+### Recommended copilot brief structure
+
+When asking the copilot to write a concert email, give it:
+
+```
+Event name: [Name of concert/recital]
+Date & time: [e.g. Saturday, May 10 at 7:00 PM]
+Venue: [Name and city]
+Ticket link: [URL]
+Artist/performer: [Name(s)]
+Tone: [e.g. exciting and warm / elegant and formal]
+Audience: [e.g. past students and their families]
+Key message: [e.g. limited seats available, early bird pricing ends Friday]
+```
+
+### Typical concert campaign API call sequence
+
+```http
+# 1. Generate HTML
+POST /api/hermes/concert_marketing/copilot
+{ "messages": [{ "role": "user", "content": "Write a concert announcement for..." }], "model": "auto" }
+
+# 2. Save as master template
+POST /api/hermes/concert_marketing/campaigns
+{ "name": "Spring Recital 2026 — Template", "subject_line": "...", "html_content": "...", "is_template": true }
+
+# 3. Create a child campaign for the actual send
+POST /api/hermes/concert_marketing/campaigns
+{ "name": "Spring Recital 2026 — Send", "subject_line": "...", "html_content": "...", "parent_template_id": "<template_id>", "variable_values": { "subscriber_ids": ["..."] } }
+
+# 4. Send it
+POST /api/hermes/concert_marketing/campaigns/{child_id}/send
 ```
