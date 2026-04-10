@@ -7,6 +7,28 @@
 -- Enable UUID extension
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
+-- =============================================================================
+-- WORKSPACE TYPE ENUM
+-- All valid workspace slugs. Adding a new workspace requires:
+--   ALTER TYPE workspace_type ADD VALUE IF NOT EXISTS 'new_slug';
+-- (DDL -- cannot be run inside a transaction block)
+-- =============================================================================
+
+DO $$ BEGIN
+    CREATE TYPE workspace_type AS ENUM (
+        'dreamplay_marketing',
+        'dreamplay_support',
+        'musicalbasics',
+        'crossover',
+        'concert_marketing'
+    );
+EXCEPTION
+    WHEN duplicate_object THEN NULL;  -- already exists, skip
+END $$;
+
+-- ⚠️  LIVE DATABASE — add concert_marketing if not already present:
+-- ALTER TYPE workspace_type ADD VALUE IF NOT EXISTS 'concert_marketing';
+
 
 -- =============================================================================
 -- 1. TAG DEFINITIONS
