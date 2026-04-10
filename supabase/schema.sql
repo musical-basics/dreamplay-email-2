@@ -40,7 +40,7 @@ CREATE POLICY "Allow authenticated delete tag_definitions"
 
 CREATE TABLE IF NOT EXISTS subscribers (
     id                  UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
-    email               TEXT NOT NULL UNIQUE,
+    email               TEXT NOT NULL,
     first_name          TEXT DEFAULT '',
     last_name           TEXT DEFAULT '',
 
@@ -81,6 +81,15 @@ CREATE TABLE IF NOT EXISTS subscribers (
 CREATE INDEX IF NOT EXISTS subscribers_email_idx       ON subscribers(email);
 CREATE INDEX IF NOT EXISTS subscribers_workspace_idx   ON subscribers(workspace);
 CREATE INDEX IF NOT EXISTS subscribers_status_idx      ON subscribers(status);
+
+-- Composite unique: same email can exist in multiple workspaces independently
+-- (supports multi-workspace audience membership — see docs/audience-architecture-path-progression.md)
+ALTER TABLE subscribers ADD CONSTRAINT subscribers_email_workspace_unique
+    UNIQUE (email, workspace);
+
+-- ⚠️  LIVE DATABASE MIGRATION (run once in Supabase SQL Editor if upgrading):
+-- ALTER TABLE subscribers DROP CONSTRAINT IF EXISTS subscribers_email_key;
+-- ALTER TABLE subscribers ADD CONSTRAINT subscribers_email_workspace_unique UNIQUE (email, workspace);
 
 
 -- =============================================================================

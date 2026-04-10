@@ -10,28 +10,35 @@ const supabase = createClient(
 const webhookSecret = process.env.RESEND_WEBHOOK_SECRET!;
 
 // Look up subscriber + most recent campaign from email address
+// Scoped by workspace: we first find the campaign that triggered this event,
+// then find the subscriber row in that campaign's workspace.
+// This ensures bounce/unsubscribe from a MusicalBasics send only affects the
+// musicalbasics subscriber row, not a dreamplay_marketing row for the same email.
 async function resolveSubscriber(email: string) {
-    // 1. Find subscriber by email
-    const { data: subscriber } = await supabase
-        .from("subscribers")
-        .select("id")
-        .eq("email", email)
-        .single();
-
-    if (!subscriber) return null;
-
-    // 2. Find the most recent sent_history for this subscriber to get campaign_id
-    const { data: history } = await supabase
+    // 1. Find the most recent campaign sent to this email to determine workspace
+    const { data: recentSend } = await supabase
         .from("sent_history")
-        .select("campaign_id")
-        .eq("subscriber_id", subscriber.id)
+        .select("subscriber_id, campaign_id, campaigns(workspace)")
+        .eq("email", email)
         .order("sent_at", { ascending: false })
         .limit(1)
         .single();
 
+    if (!recentSend) {
+        // Fallback: find any subscriber with this email (pre-migration behavior)
+        const { data: subscriber } = await supabase
+            .from("subscribers")
+            .select("id")
+            .eq("email", email)
+            .limit(1)
+            .single();
+        return subscriber ? { subscriberId: subscriber.id, campaignId: null, workspace: null } : null;
+    }
+
     return {
-        subscriberId: subscriber.id,
-        campaignId: history?.campaign_id || null,
+        subscriberId: recentSend.subscriber_id,
+        campaignId: recentSend.campaign_id,
+        workspace: (recentSend.campaigns as any)?.workspace || null,
     };
 }
 
@@ -102,14 +109,16 @@ export async function POST(request: Request) {
             // ── BOUNCE ──────────────────────────────────────
             else if (type === "email.bounced") {
                 console.log(`[Webhook] Bounce for ${email}`);
-                // Update subscriber status
-                await supabase
+                const resolved = await resolveSubscriber(email);
+                // Update only the workspace-scoped row (or all rows if workspace unknown)
+                const bounceQuery = supabase
                     .from("subscribers")
                     .update({ status: "bounced" })
                     .eq("email", email);
+                if (resolved?.workspace) bounceQuery.eq("workspace", resolved.workspace);
+                await bounceQuery;
 
                 // Also log as event for analytics
-                const resolved = await resolveSubscriber(email);
                 if (resolved) {
                     await supabase.from("subscriber_events").insert({
                         type: "bounce",
@@ -122,14 +131,16 @@ export async function POST(request: Request) {
             // ── COMPLAINT (Spam Report) ─────────────────────
             else if (type === "email.complained") {
                 console.log(`[Webhook] Complaint (spam report) for ${email}`);
-                // Update subscriber status
-                await supabase
+                const resolved = await resolveSubscriber(email);
+                // Update only the workspace-scoped row (or all rows if workspace unknown)
+                const complaintQuery = supabase
                     .from("subscribers")
                     .update({ status: "unsubscribed" })
                     .eq("email", email);
+                if (resolved?.workspace) complaintQuery.eq("workspace", resolved.workspace);
+                await complaintQuery;
 
                 // Also log as event for analytics
-                const resolved = await resolveSubscriber(email);
                 if (resolved) {
                     await supabase.from("subscriber_events").insert({
                         type: "complaint",

@@ -3,19 +3,20 @@ import { NextResponse } from "next/server"
 
 export async function POST(request: Request) {
     const supabase = await createClient()
-    const { subscriberId, firstName, lastName, email, campaignId } = await request.json()
+    const { subscriberId, firstName, lastName, email, campaignId, workspace } = await request.json()
 
     if (!subscriberId || !email) {
         return NextResponse.json({ error: "subscriberId and email are required" }, { status: 400 })
     }
 
-    // Check if there's already a subscriber with this email (different from current)
-    const { data: existing } = await supabase
+    // Check if there's already a subscriber with this email in the same workspace (different from current)
+    const collisionQuery = supabase
         .from("subscribers")
         .select("id, first_name, last_name, email")
         .eq("email", email.trim().toLowerCase())
         .neq("id", subscriberId)
-        .maybeSingle()
+    if (workspace) collisionQuery.eq("workspace", workspace)
+    const { data: existing } = await collisionQuery.maybeSingle()
 
     if (existing) {
         // Email belongs to another subscriber — switch the campaign to that person
