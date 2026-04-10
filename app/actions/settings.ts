@@ -5,8 +5,8 @@ import { revalidatePath } from "next/cache"
 
 // ─── Types ──────────────────────────────────────────────
 
-export type AudienceContext = "dreamplay" | "musicalbasics" | "crossover"
-export type Brand = "dreamplay" | "musicalbasics"
+export type AudienceContext = "dreamplay" | "musicalbasics" | "crossover" | "concert_marketing"
+export type Brand = "dreamplay" | "musicalbasics" | "concert_marketing"
 
 export interface DefaultLinks {
     unsubscribe_url: string
@@ -50,8 +50,8 @@ export async function getCompanyContext(audience: AudienceContext = "dreamplay")
 
     if (data?.value) return data.value
 
-    // Fallback: legacy company_context (only for dreamplay/musicalbasics, not crossover)
-    if (audience !== "crossover") {
+    // Fallback: legacy company_context (only for dreamplay/musicalbasics, not crossover/concert)
+    if (audience !== "crossover" && audience !== "concert_marketing") {
         const { data: legacy } = await supabase
             .from("app_settings")
             .select("value")
@@ -187,7 +187,7 @@ export interface AudiencePayload {
  * Used by the copilot API routes to construct the system instruction.
  */
 export async function getAllContextForAudience(
-    audience: "dreamplay" | "musicalbasics" | "both"
+    audience: "dreamplay" | "musicalbasics" | "concert_marketing" | "both"
 ): Promise<AudiencePayload> {
     if (audience === "both") {
         const [ctxMB, ctxDP, ctxCross, linksMB, linksDP] = await Promise.all([
@@ -207,6 +207,17 @@ export async function getAllContextForAudience(
                 { brand: "musicalbasics", links: linksMB },
                 { brand: "dreamplay", links: linksDP },
             ],
+        }
+    }
+
+    if (audience === "concert_marketing") {
+        const [ctx, links] = await Promise.all([
+            getCompanyContext("concert_marketing"),
+            getDefaultLinks("concert_marketing"),
+        ])
+        return {
+            contexts: [{ audience: "concert_marketing", text: ctx }],
+            links: [{ brand: "concert_marketing", links }],
         }
     }
 

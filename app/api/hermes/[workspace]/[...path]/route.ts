@@ -637,12 +637,19 @@ async function handleCopilot(
     // empty body is OK
   }
 
+  const workspaceToAudience: Record<string, string> = {
+    musicalbasics: "musicalbasics",
+    concert_marketing: "concert_marketing",
+    crossover: "both",
+    dreamplay_marketing: "dreamplay",
+    dreamplay_support: "dreamplay",
+  }
   const copilotRes = await fetch(new URL("/api/copilot", request.url), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       messages: body.messages || [],
-      audienceContext: workspace === "musicalbasics" ? "musicalbasics" : "dreamplay",
+      audienceContext: workspaceToAudience[workspace] ?? "dreamplay",
       model: body.model || "auto",
       currentHtml: body.currentHtml || "",
     }),

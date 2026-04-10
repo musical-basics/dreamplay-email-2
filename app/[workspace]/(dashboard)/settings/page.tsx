@@ -38,18 +38,21 @@ const WORKSPACE_TO_AUDIENCE: Record<string, string> = {
     dreamplay_support: "dreamplay",
     musicalbasics: "musicalbasics",
     crossover: "crossover",
+    concert_marketing: "concert_marketing",
 }
 const WORKSPACE_TO_BRAND: Record<string, string> = {
     dreamplay_marketing: "dreamplay",
     dreamplay_support: "dreamplay",
     musicalbasics: "musicalbasics",
     crossover: "musicalbasics",
+    concert_marketing: "concert_marketing",
 }
 const WORKSPACE_LABELS: Record<string, string> = {
     dreamplay_marketing: "DreamPlay Marketing",
     dreamplay_support: "DreamPlay Support",
     musicalbasics: "MusicalBasics",
     crossover: "Crossover",
+    concert_marketing: "Concert Marketing",
 }
 
 export default function SettingsPage() {
