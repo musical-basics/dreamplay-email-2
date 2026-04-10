@@ -21,7 +21,7 @@ import { duplicateCampaign, deleteCampaign, toggleTemplateStatus, toggleReadySta
 import { moveTemplateToFolder, type TemplateFolder } from "@/app/actions/template-folders"
 import { exportToBlog } from "@/app/actions/export-to-blog"
 import { useToast } from "@/hooks/use-toast"
-import { useRouter } from "next/navigation"
+import { useRouter, useParams } from "next/navigation"
 
 const statusStyles: Record<string, string> = {
     active: "bg-green-500/20 text-green-400 border-green-500/30",
@@ -91,6 +91,8 @@ export function CampaignsTable({ campaigns = [], loading, onRefresh, title = "Re
     const supabase = createClient()
     const { toast } = useToast()
     const router = useRouter()
+    const params = useParams<{ workspace: string }>()
+    const workspace = params?.workspace || "dreamplay_marketing"
 
     const handleEditClick = (campaign: Campaign) => {
         setEditingCampaign(campaign)
@@ -432,7 +434,7 @@ export function CampaignsTable({ campaigns = [], loading, onRefresh, title = "Re
                                                 )}
                                                 <div className="flex flex-col group">
                                                     <div className="flex items-center gap-2">
-                                                        <Link href={`/dashboard/${campaign.id}`} className="font-medium text-foreground hover:underline" onClick={(e) => e.stopPropagation()}>
+                                                        <Link href={`/${workspace}/dashboard/${campaign.id}`} className="font-medium text-foreground hover:underline" onClick={(e) => e.stopPropagation()}>
                                                             {campaign.name || "Untitled Campaign"}
                                                         </Link>
                                                         <button
@@ -733,7 +735,7 @@ export function CampaignsTable({ campaigns = [], loading, onRefresh, title = "Re
                                                     className="h-8 w-8 text-muted-foreground hover:text-foreground hover:bg-secondary/50"
                                                     title="Manage"
                                                 >
-                                                    <Link href={`/dashboard/${campaign.id}`}>
+                                                    <Link href={`/${workspace}/dashboard/${campaign.id}`}>
                                                         <ArrowRight className="w-4 h-4" />
                                                     </Link>
                                                 </Button>

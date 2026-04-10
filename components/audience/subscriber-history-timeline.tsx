@@ -1,8 +1,7 @@
-"use client"
-
 import { useEffect, useState } from "react"
 import { formatDistanceToNow } from "date-fns"
 import Link from "next/link"
+import { useParams } from "next/navigation"
 import {
     Mail,
     MousePointer2,
@@ -47,6 +46,8 @@ export function SubscriberHistoryTimeline({ subscriberId }: { subscriberId: stri
     const [campaigns, setCampaigns] = useState<CampaignSend[]>([])
     const [chains, setChains] = useState<ChainProcess[]>([])
     const [loading, setLoading] = useState(true)
+    const params = useParams<{ workspace: string }>()
+    const workspace = params?.workspace || "dreamplay_marketing"
 
     useEffect(() => {
         Promise.all([
@@ -198,7 +199,7 @@ export function SubscriberHistoryTimeline({ subscriberId }: { subscriberId: stri
                                         <Mail className="w-3 h-3 text-blue-400 flex-shrink-0" />
                                         <div className="min-w-0">
                                             <Link
-                                                href={`/dashboard/${c.campaign_id}`}
+                                                href={`/${workspace}/dashboard/${c.campaign_id}`}
                                                 className="text-xs font-medium text-foreground hover:underline truncate block"
                                             >
                                                 {c.campaigns?.name || "Unknown Campaign"}

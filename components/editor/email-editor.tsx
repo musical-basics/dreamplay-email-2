@@ -14,7 +14,7 @@ import { TestVariablesPopover } from "./test-variables-popover"
 import { useToast } from "@/hooks/use-toast"
 import { cn } from "@/lib/utils"
 import Link from "next/link"
-import { useSearchParams } from "next/navigation"
+import { useSearchParams, useParams } from "next/navigation"
 import { Panel, PanelGroup, PanelResizeHandle, ImperativePanelHandle } from "react-resizable-panels"
 import { getCampaignBackups } from "@/app/actions/campaigns"
 import { formatDistanceToNow } from "date-fns"
@@ -79,6 +79,7 @@ export function EmailEditor({
     const copilotRef = useRef<ImperativePanelHandle>(null)
     const searchParams = useSearchParams()
     const currentId = searchParams.get("id")
+    const { workspace } = useParams<{ workspace: string }>()
     const { toast } = useToast()
 
 
@@ -479,7 +480,7 @@ export function EmailEditor({
                                 {/* Manage Campaign Button */}
                                 {currentId && (
                                     <Link
-                                        href={`/dashboard/${currentId}`}
+                                        href={`/${workspace}/dashboard/${currentId}`}
                                         className="px-4 py-2 rounded-md text-sm font-medium border border-border bg-background hover:bg-muted transition-all flex items-center gap-2"
                                     >
                                         <Rocket className="w-4 h-4" />
