@@ -6,6 +6,7 @@ import { addPlayButtonsToVideoThumbnails } from "@/lib/video-overlay";
 import { applyAllMergeTags } from "@/lib/merge-tags";
 import { injectPreheader } from "@/lib/email-preheader";
 import { inlineStyles } from "@/lib/email-inline-styles";
+import { proxyEmailImages } from "@/lib/image-proxy";
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
@@ -60,8 +61,8 @@ export async function POST(request: Request) {
         let htmlContent = renderTemplate(campaign.html_content || "", globalAssets);
         htmlContent = injectPreheader(htmlContent, campaign.variable_values?.preview_text);
         htmlContent = inlineStyles(htmlContent);
+        htmlContent = await proxyEmailImages(htmlContent); // optimize + proxy images to match real recipient experience
         htmlContent = await addPlayButtonsToVideoThumbnails(htmlContent); // match real recipient experience
-        // Note: proxyEmailImages intentionally skipped for test sends (see original image URLs)
 
         // Simulate subscriber for merge tags
         let simulationSubscriber = null;
