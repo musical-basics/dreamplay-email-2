@@ -110,18 +110,9 @@ export async function POST(request: Request) {
                 const globalHtmlContent = renderTemplate(campaign.html_content || "", globalAssets);
                 const htmlWithPreheader = injectPreheader(globalHtmlContent, campaign.variable_values?.preview_text);
 
-                // ── Proxy external images → permanent Supabase URLs ───────────
-                sendLog(controller, encoder, "info", "Proxying images to permanent CDN URLs...");
-                const htmlProxied = await proxyEmailImages(htmlWithPreheader);
-                const proxiedCount = (htmlProxied.match(/supabase\.co/g) || []).length;
-                const originalCount = (htmlWithPreheader.match(/supabase\.co/g) || []).length;
-                const newlyProxied = proxiedCount - originalCount;
-                if (newlyProxied > 0) {
-                    sendLog(controller, encoder, "success", `✅ ${newlyProxied} image(s) proxied to Supabase CDN`);
-                } else {
-                    sendLog(controller, encoder, "warn", "⚠️  No images were proxied — check Vercel logs for proxy errors");
-                }
-                let htmlContent = htmlProxied;
+                // NOTE: proxyEmailImages is called AFTER addPlayButtonsToVideoThumbnails below,
+                // so video thumbnails (injected by the overlay step) are also optimized.
+                let htmlContent = htmlWithPreheader;
 
                 // Child campaign for templates
                 let trackingCampaignId = campaignId;
@@ -193,6 +184,18 @@ export async function POST(request: Request) {
                 const htmlWithFooter = htmlContent + unsubscribeFooter;
                 const htmlWithVideoOverlay = await addPlayButtonsToVideoThumbnails(htmlWithFooter);
 
+                // ── Proxy external images → permanent Supabase URLs ───────────
+                // Runs AFTER video overlay so YouTube thumbnails are also compressed.
+                sendLog(controller, encoder, "info", "Proxying & optimizing images...");
+                const htmlProxied = await proxyEmailImages(htmlWithVideoOverlay);
+                const proxiedCount = (htmlProxied.match(/\/email-images\/(optimized|hashed)\//g) || []).length;
+                sendLog(controller, encoder, proxiedCount > 0 ? "success" : "warn",
+                    proxiedCount > 0
+                        ? `✅ ${proxiedCount} image(s) optimized & proxied to CDN`
+                        : "⚠️  No images were proxied — check Vercel logs for proxy errors"
+                );
+                const htmlFinal = htmlProxied;
+
                 let successCount = 0;
                 let failureCount = 0;
                 let firstResendEmailId: string | null = null;
@@ -222,7 +225,7 @@ export async function POST(request: Request) {
 
                         const unsubscribeUrl = `${baseUrl}/unsubscribe?s=${sub.id}&c=${trackingCampaignId}&w=${campaign.workspace}`;
 
-                        const { html: personalHtml_, log: mergeTagLog } = await applyAllMergeTagsWithLog(htmlWithVideoOverlay, sub, {
+                        const { html: personalHtml_, log: mergeTagLog } = await applyAllMergeTagsWithLog(htmlFinal, sub, {
                             unsubscribe_url: unsubscribeUrl,
                             discount_code: campaign.variable_values?.discount_code || "",
                             discount_code1: campaign.variable_values?.discount_code1 || "",
