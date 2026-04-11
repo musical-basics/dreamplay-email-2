@@ -14,7 +14,7 @@
  *    but their values come from runtime, not the database.
  *
  * Used by all send paths:
- *   - app/api/send/route.ts (campaign send)
+ *   - app/api/test-send/route.ts (test/preview send)
  *   - inngest/functions/send-campaign.ts (inngest campaign send)
  *   - app/api/webhooks/subscribe/route.ts (trigger execution)
  *   - lib/chains/sender.ts (chain sender)

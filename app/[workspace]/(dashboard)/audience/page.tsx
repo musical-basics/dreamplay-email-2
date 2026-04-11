@@ -1659,7 +1659,7 @@ export default function AudienceManagerPage() {
                                                                                             body: JSON.stringify({ type: 'cancel_schedule', rotationId: sched.scheduleId }),
                                                                                         })
                                                                                     } else {
-                                                                                        await fetch('/api/send', {
+                                                                                        await fetch('/api/send-stream', {
                                                                                             method: 'POST',
                                                                                             headers: { 'Content-Type': 'application/json' },
                                                                                             body: JSON.stringify({ type: 'cancel_schedule', campaignId: sched.scheduleId }),

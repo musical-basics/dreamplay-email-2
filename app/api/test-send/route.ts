@@ -2,6 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 import { Resend } from "resend";
 import { renderTemplate } from "@/lib/render-template";
+import { addPlayButtonsToVideoThumbnails } from "@/lib/video-overlay";
 import { applyAllMergeTags } from "@/lib/merge-tags";
 import { injectPreheader } from "@/lib/email-preheader";
 import { inlineStyles } from "@/lib/email-inline-styles";
@@ -15,14 +16,15 @@ const supabaseAdmin = createClient(
 );
 
 /**
- * /api/send — TEST SENDS ONLY
+ * /api/test-send — TEST SENDS ONLY
  *
- * Only handles type: "test" (sends to a given email address with simulated
- * subscriber data for preview purposes). Does NOT do tracking, history, or
- * image proxying — this is intentional for previews.
+ * Sends a preview email to a given address with simulated subscriber data.
+ * Applies CSS inlining, preheader, and video overlays so the preview matches
+ * what real recipients will see. Intentionally skips proxyEmailImages (so you
+ * can see original image URLs in the preview), history, and tracking.
  *
- * For everything else:
- *   - Broadcast send  → POST /api/send-stream (type omitted / "broadcast")
+ * For production sends:
+ *   - Broadcast       → POST /api/send-stream
  *   - Schedule        → POST /api/send-stream (type: "schedule")
  *   - Cancel schedule → POST /api/send-stream (type: "cancel_schedule")
  */
@@ -58,7 +60,8 @@ export async function POST(request: Request) {
         let htmlContent = renderTemplate(campaign.html_content || "", globalAssets);
         htmlContent = injectPreheader(htmlContent, campaign.variable_values?.preview_text);
         htmlContent = inlineStyles(htmlContent);
-        // Note: proxyEmailImages intentionally skipped for test sends (we want to see originals)
+        htmlContent = await addPlayButtonsToVideoThumbnails(htmlContent); // match real recipient experience
+        // Note: proxyEmailImages intentionally skipped for test sends (see original image URLs)
 
         // Simulate subscriber for merge tags
         let simulationSubscriber = null;
