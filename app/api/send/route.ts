@@ -178,7 +178,7 @@ export async function POST(request: Request) {
                 return NextResponse.json({ error: "No active subscribers found" }, { status: 400 });
             }
 
-            const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "https://email.dreamplaypianos.com";
+            const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "https://dreamplay-email-2.vercel.app";
 
             // Unsubscribe Footer Template
             const unsubscribeFooter = `
@@ -224,7 +224,7 @@ export async function POST(request: Request) {
             for (let ri = 0; ri < recipients.length; ri++) {
                 const sub = recipients[ri];
                 try {
-                    const unsubscribeUrl = `${baseUrl}/unsubscribe?s=${sub.id}&c=${trackingCampaignId}`;
+                    const unsubscribeUrl = `${baseUrl}/unsubscribe?s=${sub.id}&c=${trackingCampaignId}&w=${campaign.workspace}`;
 
                     const { html: personalHtml_, log: mergeTagLog } = await applyAllMergeTagsWithLog(htmlWithVideoOverlay, sub, {
                         unsubscribe_url: unsubscribeUrl,

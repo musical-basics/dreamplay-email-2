@@ -132,7 +132,7 @@ export async function POST(request: Request) {
 
                 sendLog(controller, encoder, "info", `Found ${recipients.length} recipient(s)`, { total: recipients.length });
 
-                const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "https://email.dreamplaypianos.com";
+                const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "https://dreamplay-email-2.vercel.app";
 
                 const unsubscribeFooter = `
 <div style="margin-top: 40px; padding-top: 20px; border-top: 1px solid #e5e7eb; text-align: center; font-size: 12px; color: #6b7280; font-family: sans-serif;">
@@ -172,7 +172,7 @@ export async function POST(request: Request) {
                     try {
                         sendLog(controller, encoder, "info", `${progress} Processing ${sub.email}...`);
 
-                        const unsubscribeUrl = `${baseUrl}/unsubscribe?s=${sub.id}&c=${trackingCampaignId}`;
+                        const unsubscribeUrl = `${baseUrl}/unsubscribe?s=${sub.id}&c=${trackingCampaignId}&w=${campaign.workspace}`;
 
                         const { html: personalHtml_, log: mergeTagLog } = await applyAllMergeTagsWithLog(htmlWithVideoOverlay, sub, {
                             unsubscribe_url: unsubscribeUrl,

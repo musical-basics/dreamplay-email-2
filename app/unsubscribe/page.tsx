@@ -1,13 +1,20 @@
-import { UnsubscribeConfirm } from "./unsubscribe-confirm";
+import { createClient as createServiceClient } from "@supabase/supabase-js"
+import { UnsubscribeConfirm } from "./unsubscribe-confirm"
+
+const WORKSPACE_LABELS: Record<string, string> = {
+    dreamplay_marketing: "DreamPlay Marketing",
+    dreamplay_support: "DreamPlay Support",
+    musicalbasics: "Musical Basics",
+    crossover: "Crossover",
+    concert_marketing: "Concert Marketing",
+}
 
 export default async function UnsubscribePage({
     searchParams,
 }: {
-    searchParams: Promise<{ s?: string; c?: string }>;
+    searchParams: Promise<{ s?: string; c?: string; w?: string }>
 }) {
-    const resolvedParams = await searchParams; // Next.js 15+ async searchParams
-    const subscriberId = resolvedParams.s;
-    const campaignId = resolvedParams.c;
+    const { s: subscriberId, c: campaignId, w: workspace } = await searchParams
 
     if (!subscriberId) {
         return (
@@ -16,14 +23,38 @@ export default async function UnsubscribePage({
                     <p className="text-gray-500">Invalid unsubscribe link.</p>
                 </div>
             </div>
-        );
+        )
     }
+
+    // Look up subscriber email (needed for "unsubscribe from all" option)
+    let email: string | undefined
+    try {
+        const supabase = createServiceClient(
+            process.env.NEXT_PUBLIC_SUPABASE_URL!,
+            process.env.SUPABASE_SERVICE_KEY!
+        )
+        const { data } = await supabase
+            .from("subscribers")
+            .select("email")
+            .eq("id", subscriberId)
+            .single()
+        email = data?.email
+    } catch {
+        // Non-fatal — Option 2 will be hidden if email is unavailable
+    }
+
+    const workspaceLabel = workspace ? (WORKSPACE_LABELS[workspace] ?? workspace) : undefined
 
     return (
         <div className="flex min-h-screen items-center justify-center bg-gray-50 px-4">
-            <div className="max-w-md w-full bg-white rounded-lg shadow-sm p-8 border border-gray-100">
-                <UnsubscribeConfirm subscriberId={subscriberId} campaignId={campaignId} />
+            <div className="max-w-lg w-full bg-white rounded-xl shadow-sm p-8 border border-gray-100">
+                <UnsubscribeConfirm
+                    subscriberId={subscriberId}
+                    campaignId={campaignId}
+                    email={email}
+                    workspaceLabel={workspaceLabel}
+                />
             </div>
         </div>
-    );
+    )
 }
