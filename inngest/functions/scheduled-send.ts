@@ -35,14 +35,13 @@ export const scheduledCampaignSend = inngest.createFunction(
             return { message: "Campaign already sent", campaignId };
         }
 
-        // Fire the actual send via the existing broadcast API
+        // Fire the actual send via send-stream (source of truth — same route as the "Send Campaign" button)
         const result = await step.run("send-broadcast", async () => {
             const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "https://email.dreamplaypianos.com";
-            const response = await fetch(`${baseUrl}/api/send`, {
+            const response = await fetch(`${baseUrl}/api/send-stream`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                    type: "broadcast",
                     campaignId,
                     fromName: fromName || "Lionel Yu",
                     fromEmail: fromEmail || "lionel@email.dreamplaypianos.com",
@@ -53,9 +52,21 @@ export const scheduledCampaignSend = inngest.createFunction(
                 }),
             });
 
-            const data = await response.json();
-            if (!response.ok) throw new Error(data.error || data.message || "Broadcast failed");
-            return data;
+            // send-stream returns an NDJSON stream — consume it fully and parse the final summary line
+            const text = await response.text();
+            const lines = text.trim().split("\n").filter(Boolean);
+            const lastLine = lines[lines.length - 1];
+            try {
+                const parsed = JSON.parse(lastLine);
+                if (parsed.done) {
+                    return { success: true, message: parsed.message, stats: parsed.stats };
+                }
+            } catch {
+                // Fall through to generic success
+            }
+
+            if (!response.ok) throw new Error(`Broadcast failed: ${text.slice(0, 200)}`);
+            return { success: true, message: "Broadcast completed" };
         });
 
         // Update scheduled status

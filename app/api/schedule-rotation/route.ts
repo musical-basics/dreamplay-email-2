@@ -9,7 +9,11 @@ const supabaseAdmin = createClient(
 export async function POST(request: Request) {
     try {
         const body = await request.json();
-        const { type, rotationId, subscriberIds, scheduledAt } = body;
+        const {
+            type, rotationId, subscriberIds, scheduledAt,
+            fromName, fromEmail,
+            clickTracking, openTracking, resendClickTracking, resendOpenTracking,
+        } = body;
 
         if (!rotationId) {
             return NextResponse.json({ error: "rotationId is required" }, { status: 400 });
@@ -47,6 +51,12 @@ export async function POST(request: Request) {
                     rotationId,
                     subscriberIds,
                     scheduledAt: scheduledDate.toISOString(),
+                    fromName: fromName || null,
+                    fromEmail: fromEmail || null,
+                    clickTracking: clickTracking ?? true,
+                    openTracking: openTracking ?? true,
+                    resendClickTracking: resendClickTracking ?? false,
+                    resendOpenTracking: resendOpenTracking ?? false,
                 },
             });
 

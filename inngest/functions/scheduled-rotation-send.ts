@@ -10,7 +10,7 @@ export const scheduledRotationSend = inngest.createFunction(
     { id: "scheduled-rotation-send" },
     { event: "rotation.scheduled-send" },
     async ({ event, step }) => {
-        const { rotationId, subscriberIds, scheduledAt } = event.data;
+        const { rotationId, subscriberIds, scheduledAt, fromName, fromEmail, clickTracking, openTracking, resendClickTracking, resendOpenTracking } = event.data;
 
         // Wait until the scheduled time
         await step.sleepUntil("wait-for-schedule", new Date(scheduledAt));
@@ -44,6 +44,12 @@ export const scheduledRotationSend = inngest.createFunction(
                 body: JSON.stringify({
                     rotationId,
                     subscriberIds,
+                    fromName: fromName || null,
+                    fromEmail: fromEmail || null,
+                    clickTracking: clickTracking ?? true,
+                    openTracking: openTracking ?? true,
+                    resendClickTracking: resendClickTracking ?? false,
+                    resendOpenTracking: resendOpenTracking ?? false,
                 }),
             });
 

@@ -33,6 +33,7 @@ export async function POST(request: Request) {
         campaignId, fromName, fromEmail,
         clickTracking = true, openTracking = true,
         resendClickTracking = false, resendOpenTracking = false,
+        overrideSubscriberIds,  // optional: caller-supplied list bypasses campaign's own targeting
     } = body;
 
     const encoder = new TextEncoder();
@@ -116,7 +117,10 @@ export async function POST(request: Request) {
                 const lockedSubscriberId = campaign.variable_values?.subscriber_id;
                 const lockedSubscriberIds: string[] | undefined = campaign.variable_values?.subscriber_ids;
                 let query = supabaseAdmin.from("subscribers").select("*").eq("status", "active");
-                if (lockedSubscriberIds && lockedSubscriberIds.length > 0) {
+                if (overrideSubscriberIds?.length > 0) {
+                    // Caller-supplied list (e.g. from send-rotation) takes highest priority
+                    query = query.in("id", overrideSubscriberIds);
+                } else if (lockedSubscriberIds && lockedSubscriberIds.length > 0) {
                     query = query.in("id", lockedSubscriberIds);
                 } else if (lockedSubscriberId) {
                     query = query.eq("id", lockedSubscriberId);
