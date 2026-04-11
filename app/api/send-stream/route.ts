@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { Resend } from "resend";
+import { NextResponse } from "next/server";
 import { renderTemplate } from "@/lib/render-template";
 import { addPlayButtonsToVideoThumbnails } from "@/lib/video-overlay";
 import { createShopifyDiscount } from "@/app/actions/shopify-discount";
@@ -30,12 +31,55 @@ function sendLog(
 export async function POST(request: Request) {
     const body = await request.json();
     const {
+        type,           // "broadcast" (default) | "schedule" | "cancel_schedule"
         campaignId, fromName, fromEmail,
         clickTracking = true, openTracking = true,
         resendClickTracking = false, resendOpenTracking = false,
         overrideSubscriberIds,  // optional: caller-supplied list bypasses campaign's own targeting
+        scheduledAt,    // for type: "schedule"
     } = body;
 
+    // ── Schedule: save to DB + fire Inngest event ───────────────────────────
+    if (type === "schedule") {
+        if (!scheduledAt) return NextResponse.json({ error: "scheduledAt is required" }, { status: 400 });
+        const scheduledDate = new Date(scheduledAt);
+        if (scheduledDate <= new Date()) return NextResponse.json({ error: "Scheduled time must be in the future" }, { status: 400 });
+
+        await supabaseAdmin.from("campaigns").update({
+            scheduled_at: scheduledDate.toISOString(),
+            scheduled_status: "pending",
+        }).eq("id", campaignId);
+
+        const { inngest } = await import("@/inngest/client");
+        await inngest.send({
+            name: "campaign.scheduled-send",
+            data: {
+                campaignId,
+                scheduledAt: scheduledDate.toISOString(),
+                fromName, fromEmail,
+                clickTracking, openTracking,
+                resendClickTracking, resendOpenTracking,
+            },
+        });
+
+        return NextResponse.json({
+            success: true,
+            message: `Campaign scheduled for ${scheduledDate.toLocaleString()}`,
+            scheduledAt: scheduledDate.toISOString(),
+        });
+    }
+
+    // ── Cancel schedule ─────────────────────────────────────────────────────
+    if (type === "cancel_schedule") {
+        await supabaseAdmin.from("campaigns").update({
+            scheduled_at: null,
+            scheduled_status: "cancelled",
+        }).eq("id", campaignId);
+
+        return NextResponse.json({ success: true, message: "Schedule cancelled" });
+    }
+
+    // ── Broadcast: streaming NDJSON send ────────────────────────────────────
     const encoder = new TextEncoder();
 
     const stream = new ReadableStream({

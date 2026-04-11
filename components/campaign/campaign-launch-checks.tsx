@@ -176,7 +176,7 @@ export function CampaignLaunchChecks({ campaign, audience, targetSubscriber }: C
     const handleSchedule = async (date: Date) => {
         toast({ title: "Scheduling campaign...", description: `For ${date.toLocaleString()}` })
 
-        const response = await fetch("/api/send", {
+        const response = await fetch("/api/send-stream", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -205,7 +205,7 @@ export function CampaignLaunchChecks({ campaign, audience, targetSubscriber }: C
     }
 
     const handleCancelSchedule = async () => {
-        const response = await fetch("/api/send", {
+        const response = await fetch("/api/send-stream", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
