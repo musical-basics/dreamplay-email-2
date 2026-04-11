@@ -15,7 +15,7 @@
  *
  * Used by all send paths:
  *   - app/api/test-send/route.ts (test/preview send)
- *   - inngest/functions/send-campaign.ts (inngest campaign send)
+ *   - inngest/functions/api-send.ts (Hermes-triggered background send)
  *   - app/api/webhooks/subscribe/route.ts (trigger execution)
  *   - lib/chains/sender.ts (chain sender)
  */

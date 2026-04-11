@@ -3,9 +3,13 @@ import { inngest } from "@/inngest/client";
 const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "https://dreamplay-email-2.vercel.app";
 
 /**
- * Inngest function: campaign.send
+ * Inngest function: api-send (event: campaign.send)
  *
  * Triggered by the Hermes API to initiate an immediate campaign broadcast.
+ * NOTE: This is NOT related to the SendCampaignModal UI component (which lets
+ * users manually send a campaign to a subscriber from the Audience/CRM pages).
+ * This function is the background Inngest runner for Hermes-initiated sends.
+ *
  * Acts as a thin Inngest wrapper around /api/send-stream — all actual send
  * logic (image proxy, video overlay, CSS inlining, merge tags, tracking,
  * per-user discounts, Resend delivery, history inserts) lives in send-stream.
@@ -14,16 +18,16 @@ const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "https://dreamplay-email-2.ve
  * send step without duplicating any pipeline logic here.
  *
  * Event data:
- *   campaignId         — required
- *   fromName           — optional (falls back to campaign.variable_values.from_name)
- *   fromEmail          — optional (falls back to campaign.variable_values.from_email)
- *   clickTracking      — optional (defaults true in send-stream)
- *   openTracking       — optional (defaults true in send-stream)
+ *   campaignId          — required
+ *   fromName            — optional (falls back to campaign.variable_values.from_name)
+ *   fromEmail           — optional (falls back to campaign.variable_values.from_email)
+ *   clickTracking       — optional (defaults true in send-stream)
+ *   openTracking        — optional (defaults true in send-stream)
  *   resendClickTracking — optional (defaults false)
  *   resendOpenTracking  — optional (defaults false)
  */
-export const sendCampaign = inngest.createFunction(
-    { id: "send-campaign" },
+export const apiSend = inngest.createFunction(
+    { id: "api-send" },
     { event: "campaign.send" },
     async ({ event, step }) => {
         const {

@@ -159,7 +159,7 @@ async function handleCampaigns(
     }
 
     // ─── SAFETY GUARD: Require explicit recipient targeting ───────────────────
-    // Without one of these fields, send-campaign.ts would blast ALL active
+    // Without one of these fields, api-send.ts (Inngest) would blast ALL active
     // subscribers across the entire database. The Hermes API never allows
     // untargeted sends — this must be set deliberately by the caller.
     const { data: campaignCheck } = await supabase
