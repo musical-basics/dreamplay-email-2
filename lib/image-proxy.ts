@@ -57,8 +57,16 @@ function getSupabaseClient() {
 
 function isAlreadyProxied(url: string): boolean {
   try {
-    const { hostname } = new URL(url);
-    return hostname.includes(".supabase.co") || hostname.includes(".supabase.in");
+    const parsed = new URL(url);
+    const isSupabaseDomain = parsed.hostname.includes(".supabase.co") || parsed.hostname.includes(".supabase.in");
+    if (!isSupabaseDomain) return false;
+    // Only treat as "already proxied" if it's specifically in our email-images
+    // optimized/ or hashed/ paths — raw editor uploads on Supabase are NOT optimized.
+    const path = parsed.pathname;
+    return (
+      path.includes(`/object/public/${BUCKET}/optimized/`) ||
+      path.includes(`/object/public/${BUCKET}/hashed/`)
+    );
   } catch {
     return false;
   }
