@@ -61,8 +61,8 @@ export function ImageHealthCard({ htmlContent }: Props) {
           <Clock className="w-3.5 h-3.5 text-sky-400 mt-0.5 flex-shrink-0" />
           <p className="text-xs text-sky-400">
             {externalCount} external image{externalCount > 1 ? "s" : ""} will be automatically
-            downloaded and stored on our CDN when you send. Large images (&gt;5MB) will be
-            resized to 1200px JPEG.
+            downloaded and stored on our CDN when you send. Images over 150 KB will be
+            recompressed to email-safe JPEG at 1200px.
           </p>
         </div>
       )}

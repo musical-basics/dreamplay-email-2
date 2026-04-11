@@ -23,10 +23,16 @@ const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SERVICE_KEY  = process.env.SUPABASE_SERVICE_KEY!;
 const BUCKET       = "email-images";
 
-const WARN_BYTES     = 3 * 1024 * 1024;  // 3 MB
-const OPTIMIZE_BYTES = 5 * 1024 * 1024;  // 5 MB
+const WARN_BYTES     = 500 * 1024;    // 500 KB — log a warning
+const OPTIMIZE_BYTES = 150 * 1024;    // 150 KB — run Sharp (compress anything above this)
 const TARGET_WIDTH   = 1200;
-const JPEG_QUALITY   = 82;
+const JPEG_QUALITY   = 82;            // good quality/size balance for email
+const JPEG_QUALITY_FALLBACK = 90;     // retry quality if first pass is too small
+const MIN_OUTPUT_BYTES = 40 * 1024;   // 40 KB — anything smaller is likely over-compressed
+
+// Formats that benefit from Sharp recompression (photographic content).
+// SVG and GIF are passed through as-is.
+const COMPRESS_FORMATS = new Set(["image/jpeg", "image/jpg", "image/png", "image/webp", "image/avif"]);
 
 const MIME_TO_EXT: Record<string, string> = {
   "image/jpeg":    "jpg",
@@ -112,11 +118,15 @@ export async function proxyImage(imageUrl: string): Promise<string> {
     }
 
     // ── 3. Route: optimize or store as-is ─────────────────────────────────
-    if (buf.length > OPTIMIZE_BYTES) {
-      console.log(`[ImageProxy] → Needs optimization (${actualSizeKB}KB > ${Math.round(OPTIMIZE_BYTES/1024/1024)}MB), running Sharp...`);
+    const shouldOptimize = buf.length > OPTIMIZE_BYTES && COMPRESS_FORMATS.has(rawContentType);
+    if (shouldOptimize) {
+      console.log(`[ImageProxy] → Needs optimization (${actualSizeKB}KB > ${Math.round(OPTIMIZE_BYTES / 1024)}KB threshold, ${rawContentType}), running Sharp...`);
       return await optimizeAndStore(supabase, buf, imageUrl, rawContentType);
     } else {
-      console.log(`[ImageProxy] → Within size limits, storing as-is...`);
+      const reason = !COMPRESS_FORMATS.has(rawContentType)
+        ? `non-photo format (${rawContentType})`
+        : `within size limit (${actualSizeKB}KB ≤ ${Math.round(OPTIMIZE_BYTES / 1024)}KB)`;
+      console.log(`[ImageProxy] → Storing as-is: ${reason}`);
       return await storeOriginal(supabase, buf, imageUrl, rawContentType);
     }
 
@@ -227,6 +237,20 @@ async function optimizeAndStore(
       .resize({ width: TARGET_WIDTH, withoutEnlargement: true })
       .jpeg({ quality: JPEG_QUALITY, mozjpeg: true })
       .toBuffer();
+
+    // Sanity check: if the output is suspiciously small, retry at higher quality
+    if (optimizedBuf.length < MIN_OUTPUT_BYTES) {
+      console.warn(
+        `[ImageProxy] ⚠️  Output suspiciously small: ${Math.round(optimizedBuf.length/1024)}KB ` +
+        `(< ${Math.round(MIN_OUTPUT_BYTES/1024)}KB threshold). ` +
+        `Retrying at quality=${JPEG_QUALITY_FALLBACK}...`
+      );
+      optimizedBuf = await sharp(buf)
+        .resize({ width: TARGET_WIDTH, withoutEnlargement: true })
+        .jpeg({ quality: JPEG_QUALITY_FALLBACK, mozjpeg: true })
+        .toBuffer();
+      console.log(`[ImageProxy] Retry output: ${Math.round(optimizedBuf.length/1024)}KB`);
+    }
 
     const outMeta = await sharp(optimizedBuf).metadata();
     console.log(
