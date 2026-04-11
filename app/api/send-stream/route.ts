@@ -329,8 +329,11 @@ export async function POST(request: Request) {
                         }
 
                         // Send via Resend
+                        // from field resolution: explicit args → campaign.variable_values → env fallback
+                        const resolvedFromName = fromName || campaign.variable_values?.from_name;
+                        const resolvedFromEmail = fromEmail || campaign.variable_values?.from_email;
                         const { data: sendData, error } = await resend.emails.send({
-                            from: fromName && fromEmail ? `${fromName} <${fromEmail}>` : (process.env.RESEND_FROM_EMAIL || "DreamPlay <hello@email.dreamplaypianos.com>"),
+                            from: resolvedFromName && resolvedFromEmail ? `${resolvedFromName} <${resolvedFromEmail}>` : (process.env.RESEND_FROM_EMAIL || "DreamPlay <hello@email.dreamplaypianos.com>"),
                             to: sub.email,
                             subject: personalSubject,
                             html: personalHtml,
