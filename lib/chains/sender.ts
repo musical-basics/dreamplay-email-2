@@ -1,222 +1,107 @@
 // lib/chains/sender.ts
-import { Resend } from "resend";
-import { createClient } from "@supabase/supabase-js";
-import { renderTemplate } from "@/lib/render-template";
-import { createShopifyDiscount } from "@/app/actions/shopify-discount";
-import { applyAllMergeTags } from "@/lib/merge-tags";
-import { injectPreheader } from "@/lib/email-preheader";
-import { inlineStyles } from "@/lib/email-inline-styles";
-import { getDefaultLinks } from "@/app/actions/settings";
-import { proxyEmailImages } from "@/lib/image-proxy";
+// sendChainEmail is a thin wrapper that creates a named child campaign from
+// the template, then delegates ALL send logic to /api/send-stream (the single
+// source of truth for image proxying, video overlay, CSS inlining, merge tags,
+// tracking, open pixel, Resend, and history insertion).
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+import { createClient } from "@supabase/supabase-js";
+
 const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "https://email.dreamplaypianos.com";
 
-export async function sendChainEmail(subscriberId: string, email: string, firstName: string, templateKeyOrId: string, clickTracking = false, openTracking = true, resendClickTracking = false, resendOpenTracking = false) {
-    let rawHtml = "";
-    let subject = "";
-    let campaignId = "";
-    let templateFromName = "";
-    let templateFromEmail = "";
-    let templateVariableValues: Record<string, any> | null = null;
-
-    // Dynamic Database Template — templateKeyOrId is a campaign UUID
+export async function sendChainEmail(
+    subscriberId: string,
+    email: string,
+    firstName: string,
+    templateKeyOrId: string,
+    clickTracking = false,
+    openTracking = true,
+    resendClickTracking = false,
+    resendOpenTracking = false,
+    chainName?: string, // used for child campaign naming: "Email — Chain: Onboarding (John)"
+) {
     const supabase = createClient(
         process.env.NEXT_PUBLIC_SUPABASE_URL!,
         process.env.SUPABASE_SERVICE_KEY!
     );
-    const { data: dbTemplate, error } = await supabase
+
+    // 1. Fetch the template campaign
+    const { data: template, error } = await supabase
         .from("campaigns")
         .select("*")
         .eq("id", templateKeyOrId)
         .single();
 
-    if (error || !dbTemplate) {
-        console.error("Failed to load template for chain:", templateKeyOrId, error);
+    if (error || !template) {
+        console.error("Chain: Failed to load template:", templateKeyOrId, error);
         return { success: false, campaignId: "", error: "Template not found" };
     }
 
-    const vars: Record<string, string> = {
-        ...dbTemplate.variable_values,
-        first_name: firstName || "there",
-        email: email,
-    };
-    rawHtml = renderTemplate(dbTemplate.html_content || "", vars);
-    rawHtml = await proxyEmailImages(rawHtml); // snapshot external images → permanent Supabase URLs
-    rawHtml = injectPreheader(rawHtml, dbTemplate.variable_values?.preview_text);
-    // Inline CSS class styles into element style attributes (Gmail strips <style> blocks)
-    rawHtml = inlineStyles(rawHtml);
-    subject = dbTemplate.subject_line || "No Subject";
-    campaignId = dbTemplate.id;
-    templateFromName = dbTemplate.variable_values?.from_name || "";
-    templateFromEmail = dbTemplate.variable_values?.from_email || "";
-    templateVariableValues = dbTemplate.variable_values || null;
+    // 2. Create a named child campaign so this send is tracked separately
+    //    (master templates have is_template=true which the Completed tab filters out)
+    const childName = chainName
+        ? `${template.name} — Chain: ${chainName} (${firstName || email})`
+        : template.name;
 
-
-    const unsubscribeUrl = `${baseUrl}/unsubscribe?s=${subscriberId}&c=${campaignId}`;
-
-    const unsubscribeFooter = `
-        <div style="margin-top: 40px; padding-top: 20px; border-top: 1px solid #e5e7eb; text-align: center; font-size: 12px; color: #6b7280; font-family: sans-serif;">
-          <p style="margin: 0;">No longer want to receive these emails? <a href="${unsubscribeUrl}" style="color: #6b7280; text-decoration: underline;">Unsubscribe here</a>.</p>
-        </div>
-    `;
-
-    let finalHtml = rawHtml + unsubscribeFooter;
-
-    // Apply all merge tags (subscriber fields, global links, dynamic vars)
-    const supabaseForSub = createClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL!,
-        process.env.SUPABASE_SERVICE_KEY!
-    );
-    const { data: subscriberData } = await supabaseForSub
-        .from("subscribers")
-        .select("*")
-        .eq("id", subscriberId)
+    const { data: child, error: childError } = await supabase
+        .from("campaigns")
+        .insert({
+            name: childName,
+            subject_line: template.subject_line,
+            html_content: template.html_content,
+            status: "draft",
+            is_template: false,
+            parent_template_id: templateKeyOrId,
+            workspace: template.workspace,
+            variable_values: (() => {
+                const { subscriber_id, subscriber_ids, ...rest } = template.variable_values || {};
+                return rest;
+            })(),
+        })
+        .select("id")
         .single();
 
-    finalHtml = await applyAllMergeTags(finalHtml, subscriberData || { id: subscriberId, email, first_name: firstName }, {
-        unsubscribe_url: unsubscribeUrl,
-        discount_code: templateVariableValues?.discount_code || "",
-        discount_code1: templateVariableValues?.discount_code1 || "",
-        discount_code2: templateVariableValues?.discount_code2 || "",
-        discount_code3: templateVariableValues?.discount_code3 || "",
+    if (childError || !child) {
+        console.error("Chain: Failed to create child campaign:", childError);
+        return { success: false, campaignId: "", error: "Failed to create child campaign" };
+    }
+
+    // 3. Delegate to /api/send-stream — single source of truth for all send logic
+    //    (proxyEmailImages, addPlayButtonsToVideoThumbnails, inlineStyles, merge tags,
+    //     click/open tracking, Resend send, sent_history insert, campaign status update)
+    const response = await fetch(`${baseUrl}/api/send-stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            campaignId: child.id,
+            overrideSubscriberIds: [subscriberId],
+            fromName: template.variable_values?.from_name || null,
+            fromEmail: template.variable_values?.from_email || null,
+            clickTracking,
+            openTracking,
+            resendClickTracking,
+            resendOpenTracking,
+        }),
     });
 
-    // Multi-discount slots support (with backward compat for legacy single-preset config)
-    if (templateVariableValues) {
-        // Resolve default links for URL variable fallback
-        let defaultLinks: Record<string, string> = {};
-        try {
-            defaultLinks = await getDefaultLinks("dreamplay") as unknown as Record<string, string>;
-        } catch { }
+    // Consume the NDJSON stream fully and parse the final summary line
+    const text = await response.text();
+    const lines = text.trim().split("\n").filter(Boolean);
+    const lastLine = lines[lines.length - 1];
 
-        const discountSlots: any[] = templateVariableValues.discount_slots || []
-        const legacyPresetConfig = templateVariableValues.discount_preset_config
-        const legacyIsPerUser = !!templateVariableValues.discount_preset_id && !!legacyPresetConfig
-        if (discountSlots.length === 0 && legacyIsPerUser) {
-            discountSlots.push({
-                config: legacyPresetConfig,
-                preview_code: templateVariableValues.discount_code || "",
-                target_url_key: legacyPresetConfig.targetUrlKey || "",
-                code_mode: "per_user",
-            })
+    try {
+        const parsed = JSON.parse(lastLine);
+        if (parsed.done) {
+            const sent = parsed.stats?.sent ?? 0;
+            return { success: sent > 0, campaignId: child.id };
         }
+    } catch { /* fall through */ }
 
-        for (const slot of discountSlots) {
-            if ((slot.code_mode || "per_user") !== "per_user") continue
-            try {
-                const discountRes = await createShopifyDiscount({
-                    type: slot.config.type,
-                    value: slot.config.value,
-                    durationDays: slot.config.durationDays,
-                    codePrefix: slot.config.codePrefix,
-                    usageLimit: 1,
-                    ...(slot.config.expiresOn ? { expiresOn: slot.config.expiresOn } : {}),
-                })
-                if (discountRes.success && discountRes.code) {
-                    if (slot.preview_code) {
-                        finalHtml = finalHtml.replaceAll(slot.preview_code, discountRes.code)
-                    }
-                    // Also replace discount= param in any URLs
-                    if (slot.target_url_key) {
-                        // Try variable_values first, then fall back to global default links
-                        const targetUrl = templateVariableValues[slot.target_url_key]
-                            || defaultLinks[slot.target_url_key]
-                            || "";
-                        if (targetUrl && !targetUrl.includes('discount=')) {
-                            const escapedUrl = targetUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-                            const urlRegex = new RegExp(`(href=["'])${escapedUrl}([^"']*)`, 'g')
-                            finalHtml = finalHtml.replace(urlRegex, (match: string, prefix: string, suffix: string) => {
-                                if (match.includes('discount=')) return match
-                                const sep = (targetUrl + suffix).includes('?') ? '&' : '?'
-                                return `${prefix}${targetUrl}${suffix}${sep}discount=${discountRes.code}`
-                            })
-                        }
-                    }
-                }
-            } catch (discountErr) {
-                console.error(`Chain: Failed to generate per-user discount for ${email} (slot ${slot.config.codePrefix}):`, discountErr)
-            }
-        }
+    if (!response.ok) {
+        console.error("Chain: send-stream failed:", text.slice(0, 300));
+        return { success: false, campaignId: child.id, error: `send-stream failed` };
     }
 
-    // Click tracking: rewrite links only when tracking is enabled
-    if (clickTracking) {
-        finalHtml = finalHtml.replace(/href=([\"'])(https?:\/\/[^\"']+)\1/g, (match, quote, url) => {
-            if (url.includes('/unsubscribe')) return match;
-            if (url.includes('/api/track/')) return match;
-            let cleanUrl = url;
-            try {
-                const parsedUrl = new URL(url);
-                parsedUrl.searchParams.delete("sid");
-                parsedUrl.searchParams.delete("cid");
-                cleanUrl = parsedUrl.toString();
-            } catch (e) { }
-            const trackUrl = `${baseUrl}/api/track/click?u=${encodeURIComponent(cleanUrl)}&c=${campaignId}&s=${subscriberId}`;
-            return `href=${quote}${trackUrl}${quote}`;
-        });
-    } else {
-        // No redirect tracking — just set sid/cid params inline
-        finalHtml = finalHtml.replace(/href=([\"'])(https?:\/\/[^\"']+)\1/g, (match, quote, url) => {
-            if (url.includes('/unsubscribe')) return match;
-            try {
-                const parsedUrl = new URL(url);
-                parsedUrl.searchParams.set("sid", subscriberId);
-                parsedUrl.searchParams.set("cid", campaignId);
-                return `href=${quote}${parsedUrl.toString()}${quote}`;
-            } catch (e) {
-                const sep = url.includes('?') ? '&' : '?';
-                return `href=${quote}${url}${sep}sid=${subscriberId}&cid=${campaignId}${quote}`;
-            }
-        });
-    }
-
-    // Open tracking: inject 1x1 pixel
-    if (openTracking) {
-        const openPixel = `<img src="${baseUrl}/api/track/open?c=${campaignId}&s=${subscriberId}" width="1" height="1" alt="" style="display:none !important;width:1px;height:1px;opacity:0;" />`;
-        if (finalHtml.includes('</body>')) {
-            finalHtml = finalHtml.replace(/<\/body>/i, `${openPixel}</body>`);
-        } else {
-            finalHtml += openPixel;
-        }
-    }
-
-    // Send Email (disable Resend's tracking — we use our own click redirect)
-    const fromField = templateFromName && templateFromEmail
-        ? `${templateFromName} <${templateFromEmail}>`
-        : (process.env.RESEND_FROM_EMAIL || "Lionel Yu <lionel@musicalbasics.com>");
-
-    const sendResult = await resend.emails.send({
-        from: fromField,
-        to: email,
-        subject: subject,
-        html: finalHtml,
-        headers: {
-            "List-Unsubscribe": `<${unsubscribeUrl}>`,
-            "List-Unsubscribe-Post": "List-Unsubscribe=One-Click"
-        },
-        click_tracking: resendClickTracking,
-        open_tracking: resendOpenTracking,
-    } as any);
-
-    if (sendResult.error) {
-        console.error("Chain email send error:", sendResult.error);
-        return { success: false, campaignId, error: sendResult.error.message };
-    }
-
-    // Log to sent_history so chain emails appear in subscriber's email history
-    const supabaseForHistory = createClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL!,
-        process.env.SUPABASE_SERVICE_KEY!
-    );
-    await supabaseForHistory.from("sent_history").insert({
-        campaign_id: campaignId,
-        subscriber_id: subscriberId,
-        sent_at: new Date().toISOString(),
-        variant_sent: subject,
-    });
-
-    return { success: true, campaignId };
+    return { success: true, campaignId: child.id };
 }
 
 /**

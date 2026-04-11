@@ -191,7 +191,7 @@ export const genericChainRunner = inngest.createFunction(
 
             // ─── SEND EMAIL ────────────────────────────
             const sendResult = await step.run(`send-step-${i}-${stepDef.label}`, async () => {
-                return await sendChainEmail(subscriberId, email, firstName, stepDef.template_key, false, true, false, false, chain.name);
+                return await sendChainEmail(subscriberId, email, firstName, stepDef.template_key);
             });
 
             if (sendResult && sendResult.campaignId) {
@@ -210,8 +210,53 @@ export const genericChainRunner = inngest.createFunction(
                     }).eq("id", processId);
                 }
 
-                // sendChainEmail already created the named child campaign and inserted sent_history
-                // No additional child-creation post-processing needed here
+                // Create a "completed" campaign copy for this chain send
+                // (master templates have is_template=true which the Completed tab filters out)
+                if (sendResult?.campaignId) {
+                    console.log(`[CHAIN-COMPLETE] Step ${i} — creating completed campaign copy for template_key: ${stepDef.template_key}`);
+
+                    // Fetch the original campaign to copy its details
+                    const { data: originalCampaign } = await supabase
+                        .from("campaigns")
+                        .select("name, subject_line, html_content, variable_values, sent_from_email")
+                        .eq("id", stepDef.template_key)
+                        .single();
+
+                    if (originalCampaign) {
+                        const copyName = `${originalCampaign.name} — Chain: ${chain.name} (${firstName || email})`;
+                        const { data: copyCampaign, error: copyError } = await supabase
+                            .from("campaigns")
+                            .insert({
+                                name: copyName,
+                                status: "completed",
+                                email_type: "campaign",
+                                is_template: false,
+                                subject_line: originalCampaign.subject_line,
+                                html_content: originalCampaign.html_content,
+                                variable_values: originalCampaign.variable_values,
+                                sent_from_email: originalCampaign.sent_from_email,
+                                parent_template_id: stepDef.template_key,
+                                total_recipients: 1,
+                                ...(chainRotationId ? { chain_rotation_id: chainRotationId } : {}),
+                            })
+                            .select("id")
+                            .single();
+
+                        if (copyError) {
+                            console.error(`[CHAIN-COMPLETE] Error creating campaign copy:`, copyError);
+                        } else if (copyCampaign) {
+                            console.log(`[CHAIN-COMPLETE] Created completed campaign copy: ${copyCampaign.id} — "${copyName}"`);
+                            // Re-point the sent_history record to the copy so stats work
+                            await supabase
+                                .from("sent_history")
+                                .update({ campaign_id: copyCampaign.id })
+                                .eq("campaign_id", stepDef.template_key)
+                                .eq("subscriber_id", subscriberId);
+                        }
+                    }
+                } else {
+                    console.log(`[CHAIN-COMPLETE] Step ${i} — sendResult missing campaignId, skipping. sendResult:`, JSON.stringify(sendResult));
+                }
 
                 // Compute wait decision and return it
                 const shouldWait = !!(stepDef.wait_after && i < chain.steps.length - 1);

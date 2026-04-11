@@ -97,7 +97,9 @@ export const customizeAbandonment = inngest.createFunction(
                     subscriber.id,
                     subscriber.email,
                     subscriber.first_name || "there",
-                    draft.campaignId
+                    draft.campaignId,
+                    false, true, false, false,
+                    "Behavioral: Customize Abandonment (HITL)"
                 );
             });
 
