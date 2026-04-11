@@ -29,6 +29,9 @@ interface CsvRow {
 
 export async function POST(request: Request) {
     try {
+        const url = new URL(request.url)
+        const isPreview = url.searchParams.get("preview") === "true"
+
         const { workspace, rows } = await request.json() as { workspace: string; rows: CsvRow[] }
 
         if (!workspace || !Array.isArray(rows) || rows.length === 0) {
@@ -66,7 +69,6 @@ export async function POST(request: Request) {
             const existing = existingMap.get(csvRow.email)
 
             if (existing) {
-                // Merge: only overwrite non-empty fields, union tags
                 const updates: Record<string, any> = {}
                 for (const f of MERGE_FIELDS) {
                     if (csvRow[f]) updates[f] = csvRow[f]
@@ -80,8 +82,12 @@ export async function POST(request: Request) {
             }
         }
 
-        // ── Step 3: Insert new subscribers in batches ──
-        // Use upsert with ignoreDuplicates as a safety net against any race conditions
+        // ── Preview mode: return counts without writing ──
+        if (isPreview) {
+            return NextResponse.json({ willAdd: toInsert.length, willUpdate: toUpdate.length })
+        }
+
+        // ── Step 3: Insert new subscribers (upsert with ignoreDuplicates as race-condition safety net) ──
         let addedCount = 0
         for (let i = 0; i < toInsert.length; i += 500) {
             const chunk = toInsert.slice(i, i + 500)
