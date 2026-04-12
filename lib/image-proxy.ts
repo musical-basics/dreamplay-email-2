@@ -1,15 +1,17 @@
 /**
  * image-proxy.ts
  *
- * Scans email HTML for external <img src="..."> URLs, optimizes oversized
- * images using Sharp, and stores permanent copies in Supabase Storage.
+ * Scans email HTML for external <img src="..."> URLs (and CSS url() patterns),
+ * optimizes oversized images using Sharp, and stores permanent copies in
+ * Supabase Storage.
  *
  * Pipeline per image:
- *   1. HEAD check → get size before downloading
- *   2. If ≤ OPTIMIZE_BYTES → download & store as-is (fast path)
- *   3. If > OPTIMIZE_BYTES → download → resize + compress with Sharp
- *      → convert PNG→JPEG → store optimized copy
- *   4. Cache key = SHA-256 of buf (original) or SHA-256(sourceUrl+config) (optimized)
+ *   1. HEAD check → get size/type before downloading
+ *   2. Download the image buffer
+ *   3. If content-type is generic (octet-stream), infer from URL extension
+ *   4. If > OPTIMIZE_BYTES & compressible format → Sharp resize+compress → store optimized
+ *   5. Otherwise → store as-is
+ *   6. Cache key = SHA-256 of buf (original) or SHA-256(sourceUrl+config) (optimized)
  *
  * Bucket  : email-images   (public read, service-role write)
  * NOTE: bucket file_size_limit is 5MB — all OPTIMIZED outputs are always ≤5MB JPEG
@@ -23,16 +25,38 @@ const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SERVICE_KEY  = process.env.SUPABASE_SERVICE_KEY!;
 const BUCKET       = "email-images";
 
-const WARN_BYTES     = 500 * 1024;    // 500 KB — log a warning
-const OPTIMIZE_BYTES = 150 * 1024;    // 150 KB — run Sharp (compress anything above this)
-const TARGET_WIDTH   = 1200;
-const JPEG_QUALITY   = 82;            // good quality/size balance for email
-const JPEG_QUALITY_FALLBACK = 90;     // retry quality if first pass is too small
-const MIN_OUTPUT_BYTES = 40 * 1024;   // 40 KB — anything smaller is likely over-compressed
+const WARN_BYTES        = 500 * 1024;   // 500 KB — log a warning
+const OPTIMIZE_BYTES    = 150 * 1024;   // 150 KB — run Sharp (compress anything above this)
+const TARGET_WIDTH      = 1200;
+const JPEG_QUALITY      = 82;           // good quality/size balance for email
+const JPEG_QUALITY_FALLBACK = 90;       // retry quality if first pass is too small
+const MIN_OUTPUT_BYTES  = 40 * 1024;    // 40 KB — anything smaller is likely over-compressed
 
 // Formats that benefit from Sharp recompression (photographic content).
 // SVG and GIF are passed through as-is.
 const COMPRESS_FORMATS = new Set(["image/jpeg", "image/jpg", "image/png", "image/webp", "image/avif"]);
+
+// Content-type inference from URL path extension
+// Used as fallback when server returns generic application/octet-stream
+const EXT_TO_MIME: Record<string, string> = {
+  jpg:  "image/jpeg",
+  jpeg: "image/jpeg",
+  png:  "image/png",
+  webp: "image/webp",
+  gif:  "image/gif",
+  avif: "image/avif",
+  svg:  "image/svg+xml",
+};
+
+function inferMimeFromUrl(url: string): string | null {
+  try {
+    const pathname = new URL(url).pathname.toLowerCase();
+    const ext = pathname.split(".").pop()?.replace(/[?#].*$/, "") ?? "";
+    return EXT_TO_MIME[ext] ?? null;
+  } catch {
+    return null;
+  }
+}
 
 const MIME_TO_EXT: Record<string, string> = {
   "image/jpeg":    "jpg",
@@ -99,7 +123,8 @@ export async function proxyImage(imageUrl: string): Promise<string> {
       const head = await fetch(imageUrl, { method: "HEAD", signal: AbortSignal.timeout(5_000) });
       const cl = head.headers.get("content-length");
       headSize = cl ? parseInt(cl, 10) : null;
-      console.log(`[ImageProxy] HEAD ${label} → HTTP ${head.status}, content-length=${headSize ?? "unknown"}`);
+      const headType = head.headers.get("content-type") || "unknown";
+      console.log(`[ImageProxy] HEAD ${label} → HTTP ${head.status}, content-length=${headSize ?? "unknown"} bytes, content-type=${headType}`);
       if (!head.ok) {
         console.warn(`[ImageProxy] ⚠️  HEAD failed HTTP ${head.status} for ${label} — proceeding to GET anyway`);
       }
@@ -115,24 +140,47 @@ export async function proxyImage(imageUrl: string): Promise<string> {
       return imageUrl;
     }
 
-    const rawContentType = (res.headers.get("content-type") || "image/jpeg").split(";")[0].trim();
+    const serverContentType = (res.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
     const buf = Buffer.from(await res.arrayBuffer());
     const actualSizeKB = Math.round(buf.length / 1024);
 
-    console.log(`[ImageProxy] Downloaded ${label}: ${actualSizeKB}KB, content-type=${rawContentType}`);
+    // If server returns a generic/missing type, infer from URL extension
+    const urlInferredMime = inferMimeFromUrl(imageUrl);
+    const rawContentType = (
+      serverContentType &&
+      serverContentType !== "application/octet-stream" &&
+      serverContentType !== "binary/octet-stream"
+    )
+      ? serverContentType
+      : (urlInferredMime ?? serverContentType ?? "application/octet-stream");
+
+    console.log(
+      `[ImageProxy] Downloaded ${label}: ${actualSizeKB}KB (${buf.length} bytes), ` +
+      `server-content-type=${serverContentType || "none"}, resolved-type=${rawContentType}`
+    );
 
     if (buf.length > WARN_BYTES) {
-      console.warn(`[ImageProxy] ⚠️  Large image: ${label} = ${actualSizeKB}KB (>${Math.round(WARN_BYTES/1024/1024)}MB threshold)`);
+      console.warn(`[ImageProxy] ⚠️  Large image: ${label} = ${actualSizeKB}KB (${buf.length} bytes) — threshold is ${WARN_BYTES} bytes`);
     }
 
     // ── 3. Route: optimize or store as-is ─────────────────────────────────
-    const shouldOptimize = buf.length > OPTIMIZE_BYTES && COMPRESS_FORMATS.has(rawContentType);
+    const inCompressFormats = COMPRESS_FORMATS.has(rawContentType);
+    const exceedsThreshold  = buf.length > OPTIMIZE_BYTES;
+    const shouldOptimize    = exceedsThreshold && inCompressFormats;
+
+    console.log(
+      `[ImageProxy] Decision for ${label}: ` +
+      `size=${actualSizeKB}KB, threshold=${Math.round(OPTIMIZE_BYTES / 1024)}KB, ` +
+      `exceedsThreshold=${exceedsThreshold}, inCompressFormats=${inCompressFormats}, ` +
+      `shouldOptimize=${shouldOptimize}`
+    );
+
     if (shouldOptimize) {
-      console.log(`[ImageProxy] → Needs optimization (${actualSizeKB}KB > ${Math.round(OPTIMIZE_BYTES / 1024)}KB threshold, ${rawContentType}), running Sharp...`);
+      console.log(`[ImageProxy] → Running Sharp optimization on ${label} (${actualSizeKB}KB, ${rawContentType})...`);
       return await optimizeAndStore(supabase, buf, imageUrl, rawContentType);
     } else {
-      const reason = !COMPRESS_FORMATS.has(rawContentType)
-        ? `non-photo format (${rawContentType})`
+      const reason = !inCompressFormats
+        ? `non-compressible format (${rawContentType}) — URL-inferred=${urlInferredMime ?? "none"}`
         : `within size limit (${actualSizeKB}KB ≤ ${Math.round(OPTIMIZE_BYTES / 1024)}KB)`;
       console.log(`[ImageProxy] → Storing as-is: ${reason}`);
       return await storeOriginal(supabase, buf, imageUrl, rawContentType);
@@ -177,7 +225,7 @@ async function storeOriginal(
     return urlData.publicUrl;
   }
 
-  console.log(`[ImageProxy] Uploading ${label} (${Math.round(buf.length/1024)}KB) to ${path}...`);
+  console.log(`[ImageProxy] Uploading ${label} (${Math.round(buf.length / 1024)}KB) to ${path}...`);
   const { error } = await supabase.storage
     .from(BUCKET)
     .upload(path, buf, { contentType, upsert: false });
@@ -232,7 +280,7 @@ async function optimizeAndStore(
   }
 
   // Run Sharp
-  console.log(`[ImageProxy] Running Sharp on ${label} (${Math.round(buf.length/1024)}KB, ${originalContentType})...`);
+  console.log(`[ImageProxy] Running Sharp on ${label} (${Math.round(buf.length / 1024)}KB, ${originalContentType})...`);
   let meta: sharp.Metadata;
   let optimizedBuf: Buffer;
 
@@ -249,22 +297,22 @@ async function optimizeAndStore(
     // Sanity check: if the output is suspiciously small, retry at higher quality
     if (optimizedBuf.length < MIN_OUTPUT_BYTES) {
       console.warn(
-        `[ImageProxy] ⚠️  Output suspiciously small: ${Math.round(optimizedBuf.length/1024)}KB ` +
-        `(< ${Math.round(MIN_OUTPUT_BYTES/1024)}KB threshold). ` +
+        `[ImageProxy] ⚠️  Output suspiciously small: ${Math.round(optimizedBuf.length / 1024)}KB ` +
+        `(< ${Math.round(MIN_OUTPUT_BYTES / 1024)}KB threshold). ` +
         `Retrying at quality=${JPEG_QUALITY_FALLBACK}...`
       );
       optimizedBuf = await sharp(buf)
         .resize({ width: TARGET_WIDTH, withoutEnlargement: true })
         .jpeg({ quality: JPEG_QUALITY_FALLBACK, mozjpeg: true })
         .toBuffer();
-      console.log(`[ImageProxy] Retry output: ${Math.round(optimizedBuf.length/1024)}KB`);
+      console.log(`[ImageProxy] Retry output: ${Math.round(optimizedBuf.length / 1024)}KB`);
     }
 
     const outMeta = await sharp(optimizedBuf).metadata();
     console.log(
       `[ImageProxy] Sharp output: ${outMeta.width}×${outMeta.height} JPEG, ` +
-      `${Math.round(buf.length/1024)}KB → ${Math.round(optimizedBuf.length/1024)}KB ` +
-      `(${Math.round((1 - optimizedBuf.length/buf.length)*100)}% savings)`
+      `${Math.round(buf.length / 1024)}KB → ${Math.round(optimizedBuf.length / 1024)}KB ` +
+      `(${Math.round((1 - optimizedBuf.length / buf.length) * 100)}% savings)`
     );
   } catch (sharpErr: any) {
     console.error(`[ImageProxy] ❌ Sharp failed for ${label}: ${sharpErr.message}`);
@@ -272,7 +320,7 @@ async function optimizeAndStore(
     return await storeOriginal(supabase, buf, sourceUrl, originalContentType);
   }
 
-  console.log(`[ImageProxy] Uploading optimized ${label} (${Math.round(optimizedBuf.length/1024)}KB) to ${path}...`);
+  console.log(`[ImageProxy] Uploading optimized ${label} (${Math.round(optimizedBuf.length / 1024)}KB) to ${path}...`);
   const { error } = await supabase.storage
     .from(BUCKET)
     .upload(path, optimizedBuf, { contentType: "image/jpeg", upsert: false });
@@ -284,7 +332,6 @@ async function optimizeAndStore(
       return urlData.publicUrl;
     }
     console.error(`[ImageProxy] ❌ Optimized upload failed for ${label}: ${error.message} (status: ${(error as any).statusCode ?? "?"})`);
-    // Fall back to storing the original if the optimized upload fails
     console.log(`[ImageProxy] ⚠️  Attempting to store original as fallback...`);
     return await storeOriginal(supabase, buf, sourceUrl, originalContentType);
   }
@@ -301,29 +348,62 @@ async function optimizeAndStore(
 export async function proxyEmailImages(html: string): Promise<string> {
   if (!html) return html;
 
-  const srcRegex = /src=["'](https?:\/\/[^"']+)['"]/gi;
-  const externalUrls = new Set<string>();
-  let match: RegExpExecArray | null;
+  // Collect all external HTTP image URLs from:
+  //   1. src="..." attributes  (standard <img> tags)
+  //   2. url(...)  in inline style attributes (background-image, etc.)
+  const allUrls      = new Set<string>();
+  const alreadyProxied = new Set<string>();
 
-  while ((match = srcRegex.exec(html)) !== null) {
-    const url = match[1];
-    if (!isAlreadyProxied(url)) {
-      externalUrls.add(url);
+  // Pattern 1: src attributes (with or without quotes)
+  const srcRegex = /src=["']?(https?:\/\/[^"'\s>]+)["']?/gi;
+  let m: RegExpExecArray | null;
+  while ((m = srcRegex.exec(html)) !== null) {
+    // strip any trailing quote/whitespace/> that got captured
+    const url = m[1].replace(/["'>\s].*$/, "");
+    if (!url.startsWith("http")) continue;
+    if (isAlreadyProxied(url)) {
+      alreadyProxied.add(url);
+    } else {
+      allUrls.add(url);
     }
   }
 
-  if (externalUrls.size === 0) {
-    console.log("[ImageProxy] No external images found — all images already on Supabase or no images present.");
+  // Pattern 2: url() in style attributes (background-image, etc.)
+  const urlFnRegex = /url\(["']?(https?:\/\/[^"'\s)]+)["']?\)/gi;
+  while ((m = urlFnRegex.exec(html)) !== null) {
+    const url = m[1].replace(/["')\s].*$/, "");
+    if (!url.startsWith("http")) continue;
+    if (isAlreadyProxied(url)) {
+      alreadyProxied.add(url);
+    } else {
+      allUrls.add(url);
+    }
+  }
+
+  console.log(
+    `[ImageProxy] Scan complete: ${allUrls.size} to-proxy, ` +
+    `${alreadyProxied.size} already-proxied/hashed (skipped). ` +
+    `Total unique found: ${allUrls.size + alreadyProxied.size}`
+  );
+
+  if (alreadyProxied.size > 0) {
+    Array.from(alreadyProxied).forEach((u, i) =>
+      console.log(`[ImageProxy]   [SKIP ${i + 1}] Already proxied: ${tag(u)}`)
+    );
+  }
+
+  if (allUrls.size === 0) {
+    console.log("[ImageProxy] Nothing to proxy — all images already optimized or none present.");
     return html;
   }
 
-  console.log(`[ImageProxy] ═══ Starting proxy for ${externalUrls.size} unique external URL(s) ═══`);
-  Array.from(externalUrls).forEach((u, i) => console.log(`[ImageProxy]   [${i+1}] ${u}`));
+  console.log(`[ImageProxy] ═══ Starting proxy for ${allUrls.size} unique external URL(s) ═══`);
+  Array.from(allUrls).forEach((u, i) => console.log(`[ImageProxy]   [${i + 1}] ${u}`));
 
   // Proxy all unique URLs in parallel
   const urlMap = new Map<string, string>();
   await Promise.all(
-    Array.from(externalUrls).map(async (url) => {
+    Array.from(allUrls).map(async (url) => {
       const proxied = await proxyImage(url);
       urlMap.set(url, proxied);
     })
@@ -346,7 +426,7 @@ export async function proxyEmailImages(html: string): Promise<string> {
   }
 
   const proxiedCount = Array.from(urlMap.entries()).filter(([o, p]) => o !== p).length;
-  console.log(`[ImageProxy] ═══ Done: ${proxiedCount}/${externalUrls.size} proxied ═══`);
+  console.log(`[ImageProxy] ═══ Done: ${proxiedCount}/${allUrls.size} proxied ═══`);
 
   return rewritten;
 }
