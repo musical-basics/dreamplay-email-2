@@ -1,7 +1,5 @@
 import { inngest } from "@/inngest/client";
 import { createClient } from "@supabase/supabase-js";
-import { proxyEmailImages } from "@/lib/image-proxy";
-import { addPlayButtonsToVideoThumbnails } from "@/lib/video-overlay";
 
 const supabase = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -36,42 +34,6 @@ export const scheduledCampaignSend = inngest.createFunction(
         if (campaign.scheduled_status === "sent" || campaign.status === "completed") {
             return { message: "Campaign already sent", campaignId };
         }
-
-        // ── PRE-PROCESS: proxy images before handing off to send-stream ──
-        // This runs in its own Inngest step so it has a dedicated timeout budget
-        // and doesn't race against the email-sending timeout.
-        await step.run("pre-process-images", async () => {
-            const { data: fullCampaign } = await supabase
-                .from("campaigns")
-                .select("html_content, variable_values")
-                .eq("id", campaignId)
-                .single();
-
-            if (!fullCampaign?.html_content) {
-                console.log("[scheduled-send] No html_content to pre-process, skipping.");
-                return;
-            }
-
-            try {
-                console.log("[scheduled-send] Pre-processing images for campaign", campaignId);
-                const withOverlay = await addPlayButtonsToVideoThumbnails(fullCampaign.html_content);
-                const optimized = await proxyEmailImages(withOverlay);
-
-                if (optimized !== fullCampaign.html_content) {
-                    // Persist the pre-optimized HTML so send-stream picks it up directly
-                    await supabase
-                        .from("campaigns")
-                        .update({ html_content: optimized })
-                        .eq("id", campaignId);
-                    console.log("[scheduled-send] ✅ Pre-optimized HTML saved to campaign", campaignId);
-                } else {
-                    console.log("[scheduled-send] No image changes during pre-processing.");
-                }
-            } catch (err: any) {
-                // Non-fatal: send-stream will still run proxyEmailImages as a fallback
-                console.error("[scheduled-send] ⚠️ Image pre-processing failed:", err.message);
-            }
-        });
 
         // Fire the actual send via send-stream (source of truth — same route as the "Send Campaign" button)
         const result = await step.run("send-broadcast", async () => {

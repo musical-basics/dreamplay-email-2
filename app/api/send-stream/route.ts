@@ -9,6 +9,13 @@ import { injectPreheader } from "@/lib/email-preheader";
 import { proxyEmailImages } from "@/lib/image-proxy";
 import { STANDARD_TAGS } from "@/lib/variable-rules";
 
+// Allow up to 5 minutes — needed for Sharp image optimization + Supabase uploads
+// before the per-subscriber send loop. Without this, Vercel kills the function
+// at 10s (Hobby) or 60s (Pro) mid-way through image processing.
+export const maxDuration = 300;
+export const dynamic = "force-dynamic";
+
+
 const resend = new Resend(process.env.RESEND_API_KEY);
 
 const supabaseAdmin = createClient(
