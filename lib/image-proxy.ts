@@ -320,8 +320,11 @@ async function optimizeAndStore(
     );
   } catch (sharpErr: any) {
     console.error(`[ImageProxy] ❌ Sharp failed for ${label}: ${sharpErr.message}`);
-    console.log(`[ImageProxy] Falling back to storeOriginal for ${label}`);
-    return await storeOriginal(supabase, buf, sourceUrl, originalContentType);
+    // Return original URL — do NOT fall back to storeOriginal().
+    // Storing in hashed/ would poison the cache: isAlreadyProxied would
+    // permanently skip this image on all future sends.
+    console.log(`[ImageProxy] ⚠️  Returning original URL to allow retry on next send.`);
+    return sourceUrl;
   }
 
   console.log(`[ImageProxy] Uploading optimized ${label} (${Math.round(optimizedBuf.length / 1024)}KB) to ${path}...`);
@@ -336,8 +339,10 @@ async function optimizeAndStore(
       return urlData.publicUrl;
     }
     console.error(`[ImageProxy] ❌ Optimized upload failed for ${label}: ${error.message} (status: ${(error as any).statusCode ?? "?"})`);
-    console.log(`[ImageProxy] ⚠️  Attempting to store original as fallback...`);
-    return await storeOriginal(supabase, buf, sourceUrl, originalContentType);
+    // Return original URL — do NOT fall back to storeOriginal().
+    // A failed upload must not be cached into hashed/ or it poisons future sends.
+    console.log(`[ImageProxy] ⚠️  Returning original URL to allow retry on next send.`);
+    return sourceUrl;
   }
 
   const { data: urlData } = supabase.storage.from(BUCKET).getPublicUrl(path);

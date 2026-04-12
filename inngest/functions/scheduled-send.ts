@@ -66,7 +66,8 @@ export const scheduledCampaignSend = inngest.createFunction(
             }
 
             if (!response.ok) throw new Error(`Broadcast failed: ${text.slice(0, 200)}`);
-            return { success: true, message: "Broadcast completed" };
+            // Stream completed without a done:true marker — connection was severed mid-flight
+            throw new Error(`Broadcast stream truncated. Last output: ${text.slice(-300)}`);
         });
 
         // Update scheduled status

@@ -69,8 +69,8 @@ export const scheduledRotationSend = inngest.createFunction(
             if (!response.ok) {
                 throw new Error(`Rotation send failed: ${text.slice(0, 200)}`);
             }
-
-            return { success: true, message: "Rotation send completed" };
+            // Stream completed without a done:true marker — connection was severed mid-flight
+            throw new Error(`Rotation stream truncated. Last output: ${text.slice(-300)}`);
         });
 
         // Update rotation scheduled status
