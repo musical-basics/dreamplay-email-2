@@ -50,6 +50,7 @@ export const scheduledCampaignSend = inngest.createFunction(
                     resendClickTracking: resendClickTracking ?? false,
                     resendOpenTracking: resendOpenTracking ?? false,
                     triggeredBy: "scheduled",
+                    sync: true,  // skip streaming — return regular JSON response for Inngest
                 }),
             });
 

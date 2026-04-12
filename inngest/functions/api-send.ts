@@ -54,6 +54,8 @@ export const apiSend = inngest.createFunction(
                     openTracking: openTracking ?? true,
                     resendClickTracking: resendClickTracking ?? false,
                     resendOpenTracking: resendOpenTracking ?? false,
+                    triggeredBy: "scheduled",
+                    sync: true,  // skip streaming — return regular JSON response for Inngest
                 }),
             });
 

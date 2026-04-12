@@ -45,6 +45,7 @@ export async function POST(request: Request) {
         overrideSubscriberIds,  // optional: caller-supplied list bypasses campaign's own targeting
         scheduledAt,    // for type: "schedule"
         triggeredBy = "manual",  // "manual" | "scheduled" | "rotation"
+        sync = false,   // true = Inngest/server-to-server (no streaming, returns JSON)
     } = body;
 
     // ── Schedule: save to DB + fire Inngest event ───────────────────────────
@@ -87,7 +88,7 @@ export async function POST(request: Request) {
         return NextResponse.json({ success: true, message: "Schedule cancelled" });
     }
 
-    // ── Broadcast: streaming NDJSON send ────────────────────────────────────
+    // ── Broadcast: streaming NDJSON (browser) OR sync JSON (Inngest) ─────────
     const encoder = new TextEncoder();
 
     // Accumulated log records for DB persistence
@@ -104,107 +105,130 @@ export async function POST(request: Request) {
         sendLogId = logRow?.id ?? null;
     } catch { /* non-fatal */ }
 
-    const stream = new ReadableStream({
-        async start(controller) {
-            // Wrap sendLog to also accumulate into our DB log array
-            const log = (
-                level: "info" | "success" | "warn" | "error",
-                message: string,
-                meta?: Record<string, any>
-            ) => {
-                accumulatedLogs.push({ ts: new Date().toISOString(), level, message, ...(meta || {}) });
-                sendLog(controller, encoder, level, message, meta);
-            };
+    // Persist accumulated logs to send_logs table
+    const persistLogs = async () => {
+        if (!sendLogId) return;
+        const imageLogs = accumulatedLogs.filter(l =>
+            l.message.includes("[ImageProxy]") ||
+            l.message.includes("[VideoOverlay]") ||
+            l.message.includes("proxied") ||
+            l.message.includes("optimized")
+        );
+        const lastEntry = accumulatedLogs[accumulatedLogs.length - 1];
+        const isDone = lastEntry?.done === true;
+        const stats = lastEntry?.stats;
+        await supabaseAdmin.from("send_logs").update({
+            status: isDone ? "success" : "error",
+            summary: stats ?? null,
+            image_logs: imageLogs.length > 0 ? imageLogs : null,
+            raw_log: accumulatedLogs.map(l =>
+                `[${l.ts}] [${l.level.toUpperCase()}] ${l.message}`
+            ).join("\n"),
+        }).eq("id", sendLogId);
+    };
 
-            try {
-                // Fetch campaign
-                log("info", "Fetching campaign data...");
-                const { data: campaign, error: campaignError } = await supabaseAdmin
+    // ── Core broadcast function (works in both streaming + sync mode) ────────
+    // ctrl.enqueue() is a noop in sync mode; controller.close() finalizes stream.
+    type Ctrl = { enqueue: (v: Uint8Array) => void; close: () => void; error: (e: Error) => void };
+    const noopCtrl: Ctrl = { enqueue: () => {}, close: () => {}, error: () => {} };
+
+    const runCore = async (ctrl: Ctrl) => {
+        const log = (
+            level: "info" | "success" | "warn" | "error",
+            message: string,
+            meta?: Record<string, any>
+        ) => {
+            accumulatedLogs.push({ ts: new Date().toISOString(), level, message, ...(meta || {}) });
+            if (!sync) sendLog(ctrl, encoder, level, message, meta);
+        };
+
+        try {
+            // Fetch campaign
+            log("info", "Fetching campaign data...");
+            const { data: campaign, error: campaignError } = await supabaseAdmin
+                .from("campaigns")
+                .select("*")
+                .eq("id", campaignId)
+                .single();
+
+            if (campaignError || !campaign) {
+                log("error", `Campaign not found: ${campaignError?.message || "unknown"}`);
+                ctrl.close();
+                return;
+            }
+
+            log("info", `Campaign: "${campaign.name}"`);
+            log("info", `Tracking flags — click: ${clickTracking}, open: ${openTracking}, resendClick: ${resendClickTracking}, resendOpen: ${resendOpenTracking}`);
+
+            // Render global template
+            const subscriberVars = STANDARD_TAGS;
+            const globalAssets = Object.fromEntries(
+                Object.entries(campaign.variable_values || {}).filter(([key]) => !subscriberVars.includes(key))
+            ) as Record<string, string>;
+            const globalHtmlContent = renderTemplate(campaign.html_content || "", globalAssets);
+            const htmlWithPreheader = injectPreheader(globalHtmlContent, campaign.variable_values?.preview_text);
+
+            let htmlContent = htmlWithPreheader;
+
+            // Child campaign for templates
+            let trackingCampaignId = campaignId;
+            if (campaign.is_template) {
+                const today = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+                const childName = `${campaign.name} — ${today}`;
+
+                const { data: child, error: childError } = await supabaseAdmin
                     .from("campaigns")
-                    .select("*")
-                    .eq("id", campaignId)
+                    .insert({
+                        name: childName,
+                        subject_line: campaign.subject_line,
+                        html_content: campaign.html_content,
+                        status: "draft",
+                        is_template: false,
+                        parent_template_id: campaignId,
+                        variable_values: (() => {
+                            const { subscriber_id, ...rest } = campaign.variable_values || {};
+                            return rest;
+                        })(),
+                    })
+                    .select("id")
                     .single();
 
-                if (campaignError || !campaign) {
-                    log("error", `Campaign not found: ${campaignError?.message || "unknown"}`);
-                    controller.close();
+                if (childError || !child) {
+                    log("error", `Failed to create child campaign: ${childError?.message}`);
+                    ctrl.close();
                     return;
                 }
 
-                log("info", `Campaign: "${campaign.name}"`);
-                log("info", `Tracking flags — click: ${clickTracking}, open: ${openTracking}, resendClick: ${resendClickTracking}, resendOpen: ${resendOpenTracking}`);
+                trackingCampaignId = child.id;
+                log("info", `Created child campaign ${trackingCampaignId} from template`);
+            }
 
-                // Render global template
-                const subscriberVars = STANDARD_TAGS;
-                const globalAssets = Object.fromEntries(
-                    Object.entries(campaign.variable_values || {}).filter(([key]) => !subscriberVars.includes(key))
-                ) as Record<string, string>;
-                const globalHtmlContent = renderTemplate(campaign.html_content || "", globalAssets);
-                const htmlWithPreheader = injectPreheader(globalHtmlContent, campaign.variable_values?.preview_text);
+            // Fetch recipients
+            log("info", "Fetching recipients...");
+            const lockedSubscriberId = campaign.variable_values?.subscriber_id;
+            const lockedSubscriberIds: string[] | undefined = campaign.variable_values?.subscriber_ids;
+            let query = supabaseAdmin.from("subscribers").select("*").eq("status", "active");
+            if (overrideSubscriberIds?.length > 0) {
+                query = query.in("id", overrideSubscriberIds);
+            } else if (lockedSubscriberIds && lockedSubscriberIds.length > 0) {
+                query = query.in("id", lockedSubscriberIds);
+            } else if (lockedSubscriberId) {
+                query = query.eq("id", lockedSubscriberId);
+            }
 
-                // NOTE: proxyEmailImages is called AFTER addPlayButtonsToVideoThumbnails below,
-                // so video thumbnails (injected by the overlay step) are also optimized.
-                let htmlContent = htmlWithPreheader;
+            const { data: recipients, error: recipientError } = await query;
 
-                // Child campaign for templates
-                let trackingCampaignId = campaignId;
-                if (campaign.is_template) {
-                    const today = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-                    const childName = `${campaign.name} — ${today}`;
+            if (recipientError || !recipients || recipients.length === 0) {
+                log("error", "No active subscribers found");
+                ctrl.close();
+                return;
+            }
 
-                    const { data: child, error: childError } = await supabaseAdmin
-                        .from("campaigns")
-                        .insert({
-                            name: childName,
-                            subject_line: campaign.subject_line,
-                            html_content: campaign.html_content,
-                            status: "draft",
-                            is_template: false,
-                            parent_template_id: campaignId,
-                            variable_values: (() => {
-                                const { subscriber_id, ...rest } = campaign.variable_values || {};
-                                return rest;
-                            })(),
-                        })
-                        .select("id")
-                        .single();
+            log("info", `Found ${recipients.length} recipient(s)`, { total: recipients.length });
 
-                    if (childError || !child) {
-                        log("error", `Failed to create child campaign: ${childError?.message}`);
-                        controller.close();
-                        return;
-                    }
+            const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "https://dreamplay-email-2.vercel.app";
 
-                    trackingCampaignId = child.id;
-                    log("info", `Created child campaign ${trackingCampaignId} from template`);
-                }
-
-                // Fetch recipients
-                log("info", "Fetching recipients...");
-                const lockedSubscriberId = campaign.variable_values?.subscriber_id;
-                const lockedSubscriberIds: string[] | undefined = campaign.variable_values?.subscriber_ids;
-                let query = supabaseAdmin.from("subscribers").select("*").eq("status", "active");
-                if (overrideSubscriberIds?.length > 0) {
-                    query = query.in("id", overrideSubscriberIds);
-                } else if (lockedSubscriberIds && lockedSubscriberIds.length > 0) {
-                    query = query.in("id", lockedSubscriberIds);
-                } else if (lockedSubscriberId) {
-                    query = query.eq("id", lockedSubscriberId);
-                }
-
-                const { data: recipients, error: recipientError } = await query;
-
-                if (recipientError || !recipients || recipients.length === 0) {
-                    log("error", "No active subscribers found");
-                    controller.close();
-                    return;
-                }
-
-                log("info", `Found ${recipients.length} recipient(s)`, { total: recipients.length });
-
-                const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "https://dreamplay-email-2.vercel.app";
-
-                const unsubscribeFooter = `
+            const unsubscribeFooter = `
 <div style="margin-top: 40px; padding-top: 20px; border-top: 1px solid #e5e7eb; text-align: center; font-size: 12px; color: #6b7280; font-family: sans-serif;">
   <p style="margin: 0;">
     No longer want to receive these emails? 
@@ -212,256 +236,249 @@ export async function POST(request: Request) {
   </p>
 </div>
 `;
-                const htmlWithFooter = htmlContent + unsubscribeFooter;
-                const htmlWithVideoOverlay = await addPlayButtonsToVideoThumbnails(htmlWithFooter);
+            const htmlWithFooter = htmlContent + unsubscribeFooter;
+            const htmlWithVideoOverlay = await addPlayButtonsToVideoThumbnails(htmlWithFooter);
 
-                // ── Proxy external images → permanent Supabase URLs ───
-                log("info", "Proxying & optimizing images...");
-                const htmlProxied = await proxyEmailImages(htmlWithVideoOverlay);
-                const proxiedCount = (htmlProxied.match(/\/email-images\/(optimized|hashed)\//g) || []).length;
-                log(proxiedCount > 0 ? "success" : "warn",
-                    proxiedCount > 0
-                        ? `✅ ${proxiedCount} image(s) optimized & proxied to CDN`
-                        : "⚠️  No images were proxied — check send logs for proxy errors"
-                );
-                const htmlFinal = htmlProxied;
+            // ── Proxy external images → permanent Supabase URLs ───
+            log("info", "Proxying & optimizing images...");
+            const htmlProxied = await proxyEmailImages(htmlWithVideoOverlay);
+            const proxiedCount = (htmlProxied.match(/\/email-images\/(optimized|hashed)\//g) || []).length;
+            log(proxiedCount > 0 ? "success" : "warn",
+                proxiedCount > 0
+                    ? `✅ ${proxiedCount} image(s) optimized & proxied to CDN`
+                    : "⚠️  No images were proxied — check send logs for proxy errors"
+            );
+            const htmlFinal = htmlProxied;
 
-                let successCount = 0;
-                let failureCount = 0;
-                let firstResendEmailId: string | null = null;
-                const sentRecords: any[] = [];
+            let successCount = 0;
+            let failureCount = 0;
+            let firstResendEmailId: string | null = null;
+            const sentRecords: any[] = [];
 
-                // Discount slots
-                const discountSlots: any[] = campaign.variable_values?.discount_slots || [];
-                const legacyPresetConfig = campaign.variable_values?.discount_preset_config;
-                const legacyIsPerUser = !!campaign.variable_values?.discount_preset_id && !!legacyPresetConfig;
-                if (discountSlots.length === 0 && legacyIsPerUser) {
-                    discountSlots.push({
-                        config: legacyPresetConfig,
-                        preview_code: campaign.variable_values?.discount_code || "",
-                        target_url_key: legacyPresetConfig.targetUrlKey || "",
-                        code_mode: "per_user",
+            // Discount slots
+            const discountSlots: any[] = campaign.variable_values?.discount_slots || [];
+            const legacyPresetConfig = campaign.variable_values?.discount_preset_config;
+            const legacyIsPerUser = !!campaign.variable_values?.discount_preset_id && !!legacyPresetConfig;
+            if (discountSlots.length === 0 && legacyIsPerUser) {
+                discountSlots.push({
+                    config: legacyPresetConfig,
+                    preview_code: campaign.variable_values?.discount_code || "",
+                    target_url_key: legacyPresetConfig.targetUrlKey || "",
+                    code_mode: "per_user",
+                });
+            }
+            const hasPerUserSlots = discountSlots.some((s: any) => (s.code_mode || "per_user") === "per_user");
+
+            // Send loop
+            for (let ri = 0; ri < recipients.length; ri++) {
+                const sub = recipients[ri];
+                const progress = `[${ri + 1}/${recipients.length}]`;
+
+                try {
+                    log("info", `${progress} Processing ${sub.email}...`);
+
+                    const unsubscribeUrl = `${baseUrl}/unsubscribe?s=${sub.id}&c=${trackingCampaignId}&w=${campaign.workspace}`;
+
+                    const { html: personalHtml_, log: mergeTagLog } = await applyAllMergeTagsWithLog(htmlFinal, sub, {
+                        unsubscribe_url: unsubscribeUrl,
+                        discount_code: campaign.variable_values?.discount_code || "",
+                        discount_code1: campaign.variable_values?.discount_code1 || "",
+                        discount_code2: campaign.variable_values?.discount_code2 || "",
+                        discount_code3: campaign.variable_values?.discount_code3 || "",
                     });
-                }
-                const hasPerUserSlots = discountSlots.some((s: any) => (s.code_mode || "per_user") === "per_user");
+                    let personalHtml = personalHtml_;
 
-                // Send loop
-                for (let ri = 0; ri < recipients.length; ri++) {
-                    const sub = recipients[ri];
-                    const progress = `[${ri + 1}/${recipients.length}]`;
-
-                    try {
-                        log("info", `${progress} Processing ${sub.email}...`);
-
-                        const unsubscribeUrl = `${baseUrl}/unsubscribe?s=${sub.id}&c=${trackingCampaignId}&w=${campaign.workspace}`;
-
-                        const { html: personalHtml_, log: mergeTagLog } = await applyAllMergeTagsWithLog(htmlFinal, sub, {
-                            unsubscribe_url: unsubscribeUrl,
-                            discount_code: campaign.variable_values?.discount_code || "",
-                            discount_code1: campaign.variable_values?.discount_code1 || "",
-                            discount_code2: campaign.variable_values?.discount_code2 || "",
-                            discount_code3: campaign.variable_values?.discount_code3 || "",
-                        });
-                        let personalHtml = personalHtml_;
-
-                        // Per-user discounts
-                        if (hasPerUserSlots) {
-                            for (const slot of discountSlots) {
-                                if ((slot.code_mode || "per_user") !== "per_user") continue;
-                                try {
-                                    const discountRes = await createShopifyDiscount({
-                                        type: slot.config.type,
-                                        value: slot.config.value,
-                                        durationDays: slot.config.durationDays,
-                                        codePrefix: slot.config.codePrefix,
-                                        usageLimit: 1,
-                                        ...(slot.config.expiresOn ? { expiresOn: slot.config.expiresOn } : {}),
-                                    });
-                                    if (discountRes.success && discountRes.code) {
-                                        log("info", `${progress} Generated discount code: ${discountRes.code}`);
-                                        if (slot.preview_code) {
-                                            personalHtml = personalHtml.replaceAll(slot.preview_code, discountRes.code);
-                                        }
-                                        const targetUrlKey = slot.target_url_key;
-                                        if (targetUrlKey) {
-                                            const targetUrl = campaign.variable_values?.[targetUrlKey];
-                                            if (targetUrl && !targetUrl.includes('discount=')) {
-                                                const escapedUrl = targetUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                                                const urlRegex = new RegExp(`(href=["'])${escapedUrl}([^"']*)`, 'g');
-                                                personalHtml = personalHtml.replace(urlRegex, (match: string, prefix: string, suffix: string) => {
-                                                    if (match.includes('discount=')) return match;
-                                                    const sep = (targetUrl + suffix).includes('?') ? '&' : '?';
-                                                    return `${prefix}${targetUrl}${suffix}${sep}discount=${discountRes.code}`;
-                                                });
-                                            }
+                    // Per-user discounts
+                    if (hasPerUserSlots) {
+                        for (const slot of discountSlots) {
+                            if ((slot.code_mode || "per_user") !== "per_user") continue;
+                            try {
+                                const discountRes = await createShopifyDiscount({
+                                    type: slot.config.type,
+                                    value: slot.config.value,
+                                    durationDays: slot.config.durationDays,
+                                    codePrefix: slot.config.codePrefix,
+                                    usageLimit: 1,
+                                    ...(slot.config.expiresOn ? { expiresOn: slot.config.expiresOn } : {}),
+                                });
+                                if (discountRes.success && discountRes.code) {
+                                    log("info", `${progress} Generated discount code: ${discountRes.code}`);
+                                    if (slot.preview_code) {
+                                        personalHtml = personalHtml.replaceAll(slot.preview_code, discountRes.code);
+                                    }
+                                    const targetUrlKey = slot.target_url_key;
+                                    if (targetUrlKey) {
+                                        const targetUrl = campaign.variable_values?.[targetUrlKey];
+                                        if (targetUrl && !targetUrl.includes('discount=')) {
+                                            const escapedUrl = targetUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                                            const urlRegex = new RegExp(`(href=["'])${escapedUrl}([^"']*)`, 'g');
+                                            personalHtml = personalHtml.replace(urlRegex, (match: string, prefix: string, suffix: string) => {
+                                                if (match.includes('discount=')) return match;
+                                                const sep = (targetUrl + suffix).includes('?') ? '&' : '?';
+                                                return `${prefix}${targetUrl}${suffix}${sep}discount=${discountRes.code}`;
+                                            });
                                         }
                                     }
-                                } catch (discountErr) {
-                                    log("warn", `${progress} Discount generation failed for slot ${slot.config.codePrefix}`);
                                 }
+                            } catch (discountErr) {
+                                log("warn", `${progress} Discount generation failed for slot ${slot.config.codePrefix}`);
                             }
-                            if (ri < recipients.length - 1) {
-                                await new Promise(r => setTimeout(r, 300));
-                            }
                         }
-
-                        // Click tracking
-                        if (clickTracking) {
-                            personalHtml = personalHtml.replace(/href=(["'])(https?:\/\/[^"']+)\1/g, (match, quote, url) => {
-                                if (url.includes('/unsubscribe')) return match;
-                                if (url.includes('/api/track/')) return match;
-                                let cleanUrl = url;
-                                try {
-                                    const parsedUrl = new URL(url);
-                                    parsedUrl.searchParams.delete("sid");
-                                    parsedUrl.searchParams.delete("cid");
-                                    cleanUrl = parsedUrl.toString();
-                                } catch (e) { }
-                                const trackUrl = `${baseUrl}/api/track/click?u=${encodeURIComponent(cleanUrl)}&c=${trackingCampaignId}&s=${sub.id}`;
-                                return `href=${quote}${trackUrl}${quote}`;
-                            });
-                            log("info", `${progress} Click tracking: links rewritten`);
-                        } else {
-                            personalHtml = personalHtml.replace(/href=(["'])(https?:\/\/[^"']+)\1/g, (match, quote, url) => {
-                                if (url.includes('/unsubscribe')) return match;
-                                try {
-                                    const parsedUrl = new URL(url);
-                                    parsedUrl.searchParams.set("sid", sub.id);
-                                    parsedUrl.searchParams.set("cid", trackingCampaignId);
-                                    return `href=${quote}${parsedUrl.toString()}${quote}`;
-                                } catch (e) {
-                                    const sep = url.includes('?') ? '&' : '?';
-                                    return `href=${quote}${url}${sep}sid=${sub.id}&cid=${trackingCampaignId}${quote}`;
-                                }
-                            });
+                        if (ri < recipients.length - 1) {
+                            await new Promise(r => setTimeout(r, 300));
                         }
-
-                        // Open tracking pixel
-                        if (openTracking) {
-                            const openPixel = `<img src="${baseUrl}/api/track/open?c=${trackingCampaignId}&s=${sub.id}" width="1" height="1" alt="" style="display:none !important;width:1px;height:1px;opacity:0;" />`;
-                            const hadBody = personalHtml.includes('</body>');
-                            personalHtml = personalHtml.replace(/<\/body>/i, `${openPixel}</body>`);
-                            if (!personalHtml.includes(openPixel)) {
-                                personalHtml += openPixel;
-                            }
-                            log("success", `${progress} Open pixel INJECTED for ${sub.email}`, {
-                                hadBodyTag: hadBody,
-                                pixelUrl: `${baseUrl}/api/track/open?c=${trackingCampaignId}&s=${sub.id}`,
-                            });
-                        } else {
-                            log("warn", `${progress} Open pixel SKIPPED for ${sub.email} (openTracking=false)`);
-                        }
-
-                        // Merge tags in subject
-                        const personalSubject = await applyAllMergeTags(campaign.subject_line || "", sub);
-
-                        // Log merge tag replacements
-                        if (mergeTagLog && Object.keys(mergeTagLog).length > 0) {
-                            const tagCount = Object.keys(mergeTagLog).length;
-                            log("info", `${progress} Merge tags resolved: ${tagCount} tag(s)`);
-                        }
-
-                        // Send via Resend
-                        const resolvedFromName = fromName || campaign.variable_values?.from_name;
-                        const resolvedFromEmail = fromEmail || campaign.variable_values?.from_email;
-                        const { data: sendData, error } = await resend.emails.send({
-                            from: resolvedFromName && resolvedFromEmail ? `${resolvedFromName} <${resolvedFromEmail}>` : (process.env.RESEND_FROM_EMAIL || "DreamPlay <hello@email.dreamplaypianos.com>"),
-                            to: sub.email,
-                            subject: personalSubject,
-                            html: personalHtml,
-                            headers: {
-                                "List-Unsubscribe": `<${unsubscribeUrl}>`,
-                                "List-Unsubscribe-Post": "List-Unsubscribe=One-Click"
-                            },
-                            click_tracking: resendClickTracking,
-                            open_tracking: resendOpenTracking,
-                        } as any);
-
-                        if (error) {
-                            log("error", `${progress} ❌ FAILED: ${sub.email} — ${error.message}`);
-                            failureCount++;
-                        } else {
-                            log("success", `${progress} ✅ Sent to ${sub.email}`, { resendId: sendData?.id });
-                            successCount++;
-                            if (!firstResendEmailId && sendData?.id) {
-                                firstResendEmailId = sendData.id;
-                            }
-                            sentRecords.push({
-                                campaign_id: trackingCampaignId,
-                                subscriber_id: sub.id,
-                                sent_at: new Date().toISOString(),
-                                variant_sent: campaign.subject_line || null,
-                                merge_tag_log: mergeTagLog,
-                            });
-                        }
-                    } catch (e: any) {
-                        log("error", `${progress} Unexpected error for ${sub.email}: ${e.message}`);
-                        failureCount++;
                     }
 
-                    // Rate limit
-                    if (ri < recipients.length - 1) {
-                        await new Promise(r => setTimeout(r, 600));
-                    }
-                }
-
-                // Insert history
-                if (sentRecords.length > 0) {
-                    log("info", `Inserting ${sentRecords.length} history record(s)...`);
-                    const { error: historyError } = await supabaseAdmin.from("sent_history").insert(sentRecords);
-                    if (historyError) {
-                        log("warn", `Failed to insert history: ${historyError.message}`);
+                    // Click tracking
+                    if (clickTracking) {
+                        personalHtml = personalHtml.replace(/href=(["'])(https?:\/\/[^"']+)\1/g, (match, quote, url) => {
+                            if (url.includes('/unsubscribe')) return match;
+                            if (url.includes('/api/track/')) return match;
+                            let cleanUrl = url;
+                            try {
+                                const parsedUrl = new URL(url);
+                                parsedUrl.searchParams.delete("sid");
+                                parsedUrl.searchParams.delete("cid");
+                                cleanUrl = parsedUrl.toString();
+                            } catch (e) { }
+                            const trackUrl = `${baseUrl}/api/track/click?u=${encodeURIComponent(cleanUrl)}&c=${trackingCampaignId}&s=${sub.id}`;
+                            return `href=${quote}${trackUrl}${quote}`;
+                        });
+                        log("info", `${progress} Click tracking: links rewritten`);
                     } else {
-                        log("success", "History records saved");
+                        personalHtml = personalHtml.replace(/href=(["'])(https?:\/\/[^"']+)\1/g, (match, quote, url) => {
+                            if (url.includes('/unsubscribe')) return match;
+                            try {
+                                const parsedUrl = new URL(url);
+                                parsedUrl.searchParams.set("sid", sub.id);
+                                parsedUrl.searchParams.set("cid", trackingCampaignId);
+                                return `href=${quote}${parsedUrl.toString()}${quote}`;
+                            } catch (e) {
+                                const sep = url.includes('?') ? '&' : '?';
+                                return `href=${quote}${url}${sep}sid=${sub.id}&cid=${trackingCampaignId}${quote}`;
+                            }
+                        });
                     }
+
+                    // Open tracking pixel
+                    if (openTracking) {
+                        const openPixel = `<img src="${baseUrl}/api/track/open?c=${trackingCampaignId}&s=${sub.id}" width="1" height="1" alt="" style="display:none !important;width:1px;height:1px;opacity:0;" />`;
+                        const hadBody = personalHtml.includes('</body>');
+                        personalHtml = personalHtml.replace(/<\/body>/i, `${openPixel}</body>`);
+                        if (!personalHtml.includes(openPixel)) {
+                            personalHtml += openPixel;
+                        }
+                        log("success", `${progress} Open pixel INJECTED for ${sub.email}`, {
+                            hadBodyTag: hadBody,
+                            pixelUrl: `${baseUrl}/api/track/open?c=${trackingCampaignId}&s=${sub.id}`,
+                        });
+                    } else {
+                        log("warn", `${progress} Open pixel SKIPPED for ${sub.email} (openTracking=false)`);
+                    }
+
+                    // Merge tags in subject
+                    const personalSubject = await applyAllMergeTags(campaign.subject_line || "", sub);
+
+                    // Log merge tag replacements
+                    if (mergeTagLog && Object.keys(mergeTagLog).length > 0) {
+                        const tagCount = Object.keys(mergeTagLog).length;
+                        log("info", `${progress} Merge tags resolved: ${tagCount} tag(s)`);
+                    }
+
+                    // Send via Resend
+                    const resolvedFromName = fromName || campaign.variable_values?.from_name;
+                    const resolvedFromEmail = fromEmail || campaign.variable_values?.from_email;
+                    const { data: sendData, error } = await resend.emails.send({
+                        from: resolvedFromName && resolvedFromEmail ? `${resolvedFromName} <${resolvedFromEmail}>` : (process.env.RESEND_FROM_EMAIL || "DreamPlay <hello@email.dreamplaypianos.com>"),
+                        to: sub.email,
+                        subject: personalSubject,
+                        html: personalHtml,
+                        headers: {
+                            "List-Unsubscribe": `<${unsubscribeUrl}>`,
+                            "List-Unsubscribe-Post": "List-Unsubscribe=One-Click"
+                        },
+                        click_tracking: resendClickTracking,
+                        open_tracking: resendOpenTracking,
+                    } as any);
+
+                    if (error) {
+                        log("error", `${progress} ❌ FAILED: ${sub.email} — ${error.message}`);
+                        failureCount++;
+                    } else {
+                        log("success", `${progress} ✅ Sent to ${sub.email}`, { resendId: sendData?.id });
+                        successCount++;
+                        if (!firstResendEmailId && sendData?.id) {
+                            firstResendEmailId = sendData.id;
+                        }
+                        sentRecords.push({
+                            campaign_id: trackingCampaignId,
+                            subscriber_id: sub.id,
+                            sent_at: new Date().toISOString(),
+                            variant_sent: campaign.subject_line || null,
+                            merge_tag_log: mergeTagLog,
+                        });
+                    }
+                } catch (e: any) {
+                    log("error", `${progress} Unexpected error for ${sub.email}: ${e.message}`);
+                    failureCount++;
                 }
 
-
-                // Update campaign status
-                const updateData: any = {
-                    status: "completed",
-                    total_recipients: recipients.length,
-                    sent_from_email: fromEmail || null,
-                    updated_at: new Date().toISOString(),
-                };
-                if (firstResendEmailId) {
-                    updateData.resend_email_id = firstResendEmailId;
+                // Rate limit
+                if (ri < recipients.length - 1) {
+                    await new Promise(r => setTimeout(r, 600));
                 }
-                await supabaseAdmin.from("campaigns").update(updateData).eq("id", trackingCampaignId);
-
-                // Final summary
-                const message = `Broadcast complete: ${successCount} sent, ${failureCount} failed out of ${recipients.length} recipients.`;
-                log("success", `🎉 ${message}`, {
-                    done: true,
-                    stats: { sent: successCount, failed: failureCount, total: recipients.length },
-                    message,
-                });
-
-            } catch (err: any) {
-                log("error", `Fatal error: ${err.message}`);
-            } finally {
-                // ── Persist all accumulated logs to send_logs table ───────────
-                if (sendLogId) {
-                    const imageLogs = accumulatedLogs.filter(l =>
-                        l.message.includes("[ImageProxy]") ||
-                        l.message.includes("[VideoOverlay]") ||
-                        l.message.includes("proxied") ||
-                        l.message.includes("optimized")
-                    );
-                    const lastEntry = accumulatedLogs[accumulatedLogs.length - 1];
-                    const isDone = lastEntry?.done === true;
-                    const stats = lastEntry?.stats;
-                    await supabaseAdmin.from("send_logs").update({
-                        status: isDone ? "success" : "error",
-                        summary: stats ?? null,
-                        image_logs: imageLogs.length > 0 ? imageLogs : null,
-                        raw_log: accumulatedLogs.map(l =>
-                            `[${l.ts}] [${l.level.toUpperCase()}] ${l.message}`
-                        ).join("\n"),
-                    }).eq("id", sendLogId);
-                }
-                controller.close();
             }
+
+            // Insert history
+            if (sentRecords.length > 0) {
+                log("info", `Inserting ${sentRecords.length} history record(s)...`);
+                const { error: historyError } = await supabaseAdmin.from("sent_history").insert(sentRecords);
+                if (historyError) {
+                    log("warn", `Failed to insert history: ${historyError.message}`);
+                } else {
+                    log("success", "History records saved");
+                }
+            }
+
+            // Update campaign status
+            const updateData: any = {
+                status: "completed",
+                updated_at: new Date().toISOString(),
+            };
+            if (firstResendEmailId) updateData.resend_email_id = firstResendEmailId;
+            await supabaseAdmin.from("campaigns").update(updateData).eq("id", trackingCampaignId);
+
+            // Final summary
+            const message = `Broadcast complete: ${successCount} sent, ${failureCount} failed out of ${recipients.length} recipients.`;
+            log("success", `🎉 ${message}`, {
+                done: true,
+                stats: { sent: successCount, failed: failureCount, total: recipients.length },
+                message,
+            });
+
+        } catch (err: any) {
+            log("error", `Fatal error: ${err.message}`);
+        } finally {
+            await persistLogs();
+            ctrl.close();
+        }
+    };
+
+    // ── Sync mode (Inngest/server-to-server): regular JSON response ───────────
+    if (sync) {
+        await runCore(noopCtrl);
+        const lastEntry = accumulatedLogs[accumulatedLogs.length - 1];
+        return NextResponse.json({
+            done: lastEntry?.done ?? false,
+            stats: lastEntry?.stats ?? null,
+            logLines: accumulatedLogs.length,
+        });
+    }
+
+    // ── Streaming mode (browser): NDJSON stream ───────────────────────────────
+    const stream = new ReadableStream({
+        start(controller) {
+            runCore(controller as any);
         }
     });
 
