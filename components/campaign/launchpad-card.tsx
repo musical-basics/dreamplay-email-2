@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useRef, useEffect } from "react"
 import { Rocket, AlertTriangle, CalendarClock, X, Clock, CalendarIcon } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -72,6 +72,16 @@ export function LaunchpadCard({
     const [selectedMinute, setSelectedMinute] = useState<number | null>(null)
     const [calendarOpen, setCalendarOpen] = useState(false)
     const [timeOpen, setTimeOpen] = useState(false)
+    const selectedTimeRef = useRef<HTMLButtonElement>(null)
+
+    // Auto-scroll to the selected time when the time dropdown opens
+    useEffect(() => {
+        if (!timeOpen) return
+        const timer = setTimeout(() => {
+            selectedTimeRef.current?.scrollIntoView({ block: "center", behavior: "instant" })
+        }, 60)
+        return () => clearTimeout(timer)
+    }, [timeOpen])
 
     const openSchedulePicker = () => {
         if (!showSchedulePicker) {
@@ -124,7 +134,14 @@ export function LaunchpadCard({
         return `${h}:${m} ${period}`
     }
 
-    const canConfirm = selectedDate && selectedHour !== null && selectedMinute !== null
+    const isPastTime = (() => {
+        if (!selectedDate || selectedHour === null || selectedMinute === null) return false
+        const candidate = new Date(selectedDate)
+        candidate.setHours(selectedHour, selectedMinute, 0, 0)
+        return candidate <= new Date()
+    })()
+
+    const canConfirm = selectedDate && selectedHour !== null && selectedMinute !== null && !isPastTime
 
     return (
         <Card className="border-2 border-[#D4AF37]/30 bg-gradient-to-b from-[#D4AF37]/5 to-transparent">
@@ -197,7 +214,10 @@ export function LaunchpadCard({
                 {/* Schedule picker */}
                 {showSchedulePicker && !isScheduled && (
                     <div className="rounded-lg border border-border bg-card/50 p-4 space-y-3">
-                        <p className="text-sm font-medium text-foreground">Pick a date and time</p>
+                        <div className="flex items-center justify-between">
+                            <p className="text-sm font-medium text-foreground">Pick a date and time</p>
+                            <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-400 border border-sky-500/20">PT</span>
+                        </div>
                         <div className="flex gap-2">
                             {/* Date Picker */}
                             <Popover open={calendarOpen} onOpenChange={setCalendarOpen}>
@@ -252,6 +272,7 @@ export function LaunchpadCard({
                                                     return (
                                                         <Button
                                                             key={`${hour}-${minute}`}
+                                                            ref={isSelected ? selectedTimeRef : null}
                                                             variant={isSelected ? "default" : "ghost"}
                                                             size="sm"
                                                             className={cn(
@@ -274,11 +295,17 @@ export function LaunchpadCard({
                                 </PopoverContent>
                             </Popover>
                         </div>
+                        {isPastTime && (
+                            <p className="text-xs text-amber-400 flex items-center gap-1">
+                                <AlertTriangle className="h-3 w-3 shrink-0" />
+                                Selected time is in the past — please pick a future time.
+                            </p>
+                        )}
                         <div className="flex gap-2">
                             <Button
                                 onClick={handleScheduleSubmit}
                                 disabled={!canConfirm}
-                                className="flex-1 gap-2 bg-sky-600 text-white hover:bg-sky-500"
+                                className="flex-1 gap-2 bg-sky-600 text-white hover:bg-sky-500 disabled:opacity-50"
                                 size="sm"
                             >
                                 <CalendarClock className="h-4 w-4" />

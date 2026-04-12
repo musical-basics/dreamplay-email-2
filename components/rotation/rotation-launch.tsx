@@ -1,12 +1,12 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useRef, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 import {
     RefreshCw, Mail, ChevronDown, ChevronRight,
     Users, Play, Loader2, Home, AlertCircle, CheckCircle2,
-    CalendarClock, X, Clock, CalendarIcon
+    CalendarClock, X, Clock, CalendarIcon, AlertTriangle
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -107,6 +107,16 @@ export function RotationLaunch({ rotation, subscribers, assignments, campaignMap
     const [scheduledAt, setScheduledAt] = useState<string | null>(rotation.scheduled_at || null)
     const [scheduledStatus, setScheduledStatus] = useState<string | null>(rotation.scheduled_status || null)
     const [scheduling, setScheduling] = useState(false)
+    const selectedTimeRef = useRef<HTMLButtonElement>(null)
+
+    // Auto-scroll to the selected time when the time dropdown opens
+    useEffect(() => {
+        if (!timeOpen) return
+        const timer = setTimeout(() => {
+            selectedTimeRef.current?.scrollIntoView({ block: "center", behavior: "instant" })
+        }, 60)
+        return () => clearTimeout(timer)
+    }, [timeOpen])
 
     const openSchedulePicker = () => {
         if (!showSchedulePicker) {
@@ -159,7 +169,14 @@ export function RotationLaunch({ rotation, subscribers, assignments, campaignMap
         return `${h}:${m} ${period}`
     }
 
-    const canConfirmSchedule = selectedDate && selectedHour !== null && selectedMinute !== null
+    const isPastTime = (() => {
+        if (!selectedDate || selectedHour === null || selectedMinute === null) return false
+        const candidate = new Date(selectedDate)
+        candidate.setHours(selectedHour, selectedMinute, 0, 0)
+        return candidate <= new Date()
+    })()
+
+    const canConfirmSchedule = selectedDate && selectedHour !== null && selectedMinute !== null && !isPastTime
 
     const handleScheduleSubmit = async () => {
         if (!selectedDate || selectedHour === null || selectedMinute === null) return
@@ -401,7 +418,10 @@ export function RotationLaunch({ rotation, subscribers, assignments, campaignMap
                 {/* Schedule picker */}
                 {showSchedulePicker && !isScheduled && (
                     <div className="mb-6 rounded-lg border border-border bg-card/50 p-4 space-y-3">
-                        <p className="text-sm font-medium text-foreground">Pick a date and time</p>
+                        <div className="flex items-center justify-between">
+                            <p className="text-sm font-medium text-foreground">Pick a date and time</p>
+                            <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-400 border border-sky-500/20">PT</span>
+                        </div>
                         <div className="flex gap-2">
                             <Popover open={calendarOpen} onOpenChange={setCalendarOpen}>
                                 <PopoverTrigger asChild>
@@ -454,6 +474,7 @@ export function RotationLaunch({ rotation, subscribers, assignments, campaignMap
                                                     return (
                                                         <Button
                                                             key={`${hour}-${minute}`}
+                                                            ref={isSelected ? selectedTimeRef : null}
                                                             variant={isSelected ? "default" : "ghost"}
                                                             size="sm"
                                                             className={cn(
@@ -476,11 +497,17 @@ export function RotationLaunch({ rotation, subscribers, assignments, campaignMap
                                 </PopoverContent>
                             </Popover>
                         </div>
+                        {isPastTime && (
+                            <p className="text-xs text-amber-400 flex items-center gap-1">
+                                <AlertTriangle className="h-3 w-3 shrink-0" />
+                                Selected time is in the past — please pick a future time.
+                            </p>
+                        )}
                         <div className="flex gap-2">
                             <Button
                                 onClick={handleScheduleSubmit}
                                 disabled={!canConfirmSchedule || scheduling}
-                                className="flex-1 gap-2 bg-sky-600 text-white hover:bg-sky-500"
+                                className="flex-1 gap-2 bg-sky-600 text-white hover:bg-sky-500 disabled:opacity-50"
                                 size="sm"
                             >
                                 {scheduling ? (
