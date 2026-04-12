@@ -84,17 +84,21 @@ function isAlreadyProxied(url: string): boolean {
     const parsed = new URL(url);
     const isSupabaseDomain = parsed.hostname.includes(".supabase.co") || parsed.hostname.includes(".supabase.in");
     if (!isSupabaseDomain) return false;
-    // Only treat as "already proxied" if it's specifically in our email-images
-    // optimized/ or hashed/ paths — raw editor uploads on Supabase are NOT optimized.
+    // Only treat as "already proxied" if it's in one of our email-images output paths.
+    // - optimized/        : went through Sharp compression
+    // - hashed/           : stored as-is (small images under threshold)
+    // - video-thumbnails/ : composited + JPEG by video-overlay.ts
     const path = parsed.pathname;
     return (
       path.includes(`/object/public/${BUCKET}/optimized/`) ||
-      path.includes(`/object/public/${BUCKET}/hashed/`)
+      path.includes(`/object/public/${BUCKET}/hashed/`) ||
+      path.includes(`/object/public/${BUCKET}/video-thumbnails/`)
     );
   } catch {
     return false;
   }
 }
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Core: proxy one image — always returns a URL (original on any failure)

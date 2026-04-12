@@ -1,5 +1,6 @@
 import sharp from "sharp";
 import path from "path";
+import crypto from "crypto";
 import { createClient } from "@supabase/supabase-js";
 
 const supabase = createClient(
@@ -9,7 +10,11 @@ const supabase = createClient(
 
 const VIDEO_DOMAINS = ["youtube.com", "youtu.be", "vimeo.com"];
 
-// Cache to avoid re-compositing the same thumbnail within one send batch
+// Bucket for video thumbnails — same as image-proxy so isAlreadyProxied recognizes them
+const BUCKET = "email-images";
+const PREFIX = "video-thumbnails";
+
+// In-process cache to avoid re-compositing within one send batch (keyed by YouTube URL)
 const compositeCache = new Map<string, string>();
 
 /**
@@ -28,44 +33,65 @@ export function isVideoUrl(url: string): boolean {
 
 /**
  * Fetch a thumbnail image, composite the play button on top,
- * upload the result to Supabase, and return the public URL.
+ * and store the result as a content-addressed JPEG in Supabase.
+ *
+ * Cache key = SHA-256(thumbnailUrl) so the same YouTube thumbnail
+ * always maps to the same Supabase path — no re-processing on repeat sends.
  */
 export async function compositePlayButton(thumbnailUrl: string): Promise<string> {
-    // Check cache first
+    // 1. In-process cache (within this server invocation)
     if (compositeCache.has(thumbnailUrl)) {
+        console.log(`[VideoOverlay] In-process cache hit: ${thumbnailUrl}`);
         return compositeCache.get(thumbnailUrl)!;
     }
 
-    // 1. Fetch the thumbnail
-    const response = await fetch(thumbnailUrl);
+    // 2. Content-addressed storage key (SHA-256 of the YouTube URL)
+    const hash = crypto.createHash("sha256").update(thumbnailUrl).digest("hex");
+    const storagePath = `${PREFIX}/${hash}.jpg`;
+
+    // 3. Check if already processed and stored in Supabase
+    const { data: existing } = await supabase.storage
+        .from(BUCKET)
+        .list(PREFIX, { search: `${hash}.jpg`, limit: 1 });
+
+    if (existing && existing.length > 0) {
+        const { data: urlData } = supabase.storage.from(BUCKET).getPublicUrl(storagePath);
+        console.log(`[VideoOverlay] Supabase cache hit: ${thumbnailUrl} → ${urlData.publicUrl}`);
+        compositeCache.set(thumbnailUrl, urlData.publicUrl);
+        return urlData.publicUrl;
+    }
+
+    // 4. Fetch the thumbnail from YouTube (or wherever)
+    console.log(`[VideoOverlay] Fetching thumbnail: ${thumbnailUrl}`);
+    const response = await fetch(thumbnailUrl, { signal: AbortSignal.timeout(10_000) });
     if (!response.ok) {
-        console.error(`Failed to fetch thumbnail: ${thumbnailUrl} (${response.status})`);
+        console.error(`[VideoOverlay] Failed to fetch thumbnail: ${thumbnailUrl} (HTTP ${response.status})`);
         return thumbnailUrl; // Return original on failure
     }
     const thumbnailBuffer = Buffer.from(await response.arrayBuffer());
 
-    // 2. Load the play button PNG
+    // 5. Load the play button PNG asset
     const playButtonPath = path.join(process.cwd(), "public", "YT Play Button copy Medium.png");
     const playButton = sharp(playButtonPath);
 
-    // 3. Get thumbnail dimensions
+    // 6. Get thumbnail dimensions
     const thumbnailImage = sharp(thumbnailBuffer);
     const metadata = await thumbnailImage.metadata();
     const thumbWidth = metadata.width || 600;
     const thumbHeight = metadata.height || 338;
 
-    // 4. Resize play button to ~20% of thumbnail width
+    // 7. Resize play button to ~20% of thumbnail width
     const playSize = Math.round(thumbWidth * 0.2);
     const resizedPlayButton = await playButton
         .resize(playSize, playSize, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
         .toBuffer();
 
-    // 5. Get actual play button dimensions after resize
+    // 8. Get actual play button dimensions after resize
     const playMeta = await sharp(resizedPlayButton).metadata();
     const playW = playMeta.width || playSize;
     const playH = playMeta.height || playSize;
 
-    // 6. Composite: center the play button on the thumbnail
+    // 9. Composite + output as JPEG (was PNG — much smaller, email-safe)
     const composited = await thumbnailImage
         .composite([
             {
@@ -74,30 +100,31 @@ export async function compositePlayButton(thumbnailUrl: string): Promise<string>
                 top: Math.round((thumbHeight - playH) / 2),
             },
         ])
-        .png()
+        .jpeg({ quality: 85, mozjpeg: true })  // JPEG not PNG — ~10x smaller
         .toBuffer();
 
-    // 7. Upload to Supabase Storage
-    const filename = `video-thumb-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`;
-    const storagePath = `video-thumbnails/${filename}`;
+    const outputKB = Math.round(composited.length / 1024);
+    console.log(`[VideoOverlay] Composited JPEG: ${thumbWidth}×${thumbHeight}, ${outputKB}KB → uploading to ${storagePath}`);
 
+    // 10. Upload to email-images bucket (same as image-proxy — recognized by isAlreadyProxied)
     const { error } = await supabase.storage
-        .from("chat-assets")
+        .from(BUCKET)
         .upload(storagePath, composited, {
-            contentType: "image/png",
+            contentType: "image/jpeg",
             upsert: false,
         });
 
-    if (error) {
-        console.error("Failed to upload composited thumbnail:", error);
+    if (error && error.message !== "The resource already exists") {
+        console.error("[VideoOverlay] Failed to upload composited thumbnail:", error);
         return thumbnailUrl; // Return original on failure
     }
 
     const { data: publicUrlData } = supabase.storage
-        .from("chat-assets")
+        .from(BUCKET)
         .getPublicUrl(storagePath);
 
     const resultUrl = publicUrlData.publicUrl;
+    console.log(`[VideoOverlay] ✅ Stored: ${resultUrl} (${outputKB}KB JPEG)`);
     compositeCache.set(thumbnailUrl, resultUrl);
     return resultUrl;
 }
@@ -108,7 +135,6 @@ export async function compositePlayButton(thumbnailUrl: string): Promise<string>
  */
 export async function addPlayButtonsToVideoThumbnails(html: string): Promise<string> {
     // Match: <a href="VIDEO_URL"...><img src="THUMB_URL"...</a>
-    // This regex finds <a> tags containing <img> tags
     const linkImagePattern = /<a\s[^>]*href=["']([^"']+)["'][^>]*>(\s*(?:<[^>]*>\s*)*<img\s[^>]*src=["']([^"']+)["'][^>]*>(?:\s*<[^>]*>)*\s*)<\/a>/gi;
 
     const matches: Array<{ full: string; linkUrl: string; imgSrc: string }> = [];
@@ -117,10 +143,15 @@ export async function addPlayButtonsToVideoThumbnails(html: string): Promise<str
     while ((match = linkImagePattern.exec(html)) !== null) {
         const linkUrl = match[1];
         const imgSrc = match[3];
-        if (isVideoUrl(linkUrl) && imgSrc && !imgSrc.includes("video-thumbnails/")) {
+        // Skip if already processed (stored in our email-images/video-thumbnails/ path)
+        if (isVideoUrl(linkUrl) && imgSrc && !imgSrc.includes(`${BUCKET}/${PREFIX}/`)) {
             matches.push({ full: match[0], linkUrl, imgSrc });
         }
     }
+
+    if (matches.length === 0) return html;
+
+    console.log(`[VideoOverlay] Found ${matches.length} video thumbnail(s) to composite`);
 
     // Process all video thumbnails in parallel
     const replacements = await Promise.all(
