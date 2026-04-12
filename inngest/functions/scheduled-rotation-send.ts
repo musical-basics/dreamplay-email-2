@@ -1,5 +1,7 @@
 import { inngest } from "@/inngest/client";
 import { createClient } from "@supabase/supabase-js";
+import { proxyEmailImages } from "@/lib/image-proxy";
+import { addPlayButtonsToVideoThumbnails } from "@/lib/video-overlay";
 
 const supabase = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -34,6 +36,47 @@ export const scheduledRotationSend = inngest.createFunction(
         if (rotation.scheduled_status === "sent") {
             return { message: "Rotation already sent", rotationId };
         }
+
+        // Fire the actual send via the existing streaming API
+        // PRE-PROCESS: proxy images on all template campaigns before sending
+        await step.run("pre-process-images", async () => {
+            // Fetch the rotation to get its campaign IDs
+            const { data: rot } = await supabase
+                .from("rotations")
+                .select("campaign_ids")
+                .eq("id", rotationId)
+                .single();
+
+            if (!rot?.campaign_ids?.length) {
+                console.log("[scheduled-rotation] No campaigns to pre-process, skipping.");
+                return;
+            }
+
+            const { data: templates } = await supabase
+                .from("campaigns")
+                .select("id, html_content")
+                .in("id", rot.campaign_ids);
+
+            if (!templates?.length) return;
+
+            for (const template of templates) {
+                if (!template.html_content) continue;
+                try {
+                    console.log("[scheduled-rotation] Pre-processing images for template", template.id);
+                    const withOverlay = await addPlayButtonsToVideoThumbnails(template.html_content);
+                    const optimized = await proxyEmailImages(withOverlay);
+                    if (optimized !== template.html_content) {
+                        await supabase
+                            .from("campaigns")
+                            .update({ html_content: optimized })
+                            .eq("id", template.id);
+                        console.log("[scheduled-rotation] ✅ Pre-optimized HTML saved for template", template.id);
+                    }
+                } catch (err: any) {
+                    console.error("[scheduled-rotation] ⚠️ Image pre-processing failed for", template.id, ":", err.message);
+                }
+            }
+        });
 
         // Fire the actual send via the existing streaming API
         const result = await step.run("send-rotation", async () => {
