@@ -1834,7 +1834,7 @@ export default function AudienceManagerPage() {
                     <div className="flex items-center justify-between border-t border-border pt-4 mt-2">
                         <div className="flex items-center gap-2 text-sm text-muted-foreground">
                             <span>Show</span>
-                            {[25, 50, 100].map(size => (
+                            {[25, 50, 100, 250].map(size => (
                                 <Button
                                     key={size}
                                     variant={pageSize === size ? "default" : "outline"}
