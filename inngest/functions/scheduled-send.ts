@@ -49,6 +49,7 @@ export const scheduledCampaignSend = inngest.createFunction(
                     openTracking: openTracking ?? true,
                     resendClickTracking: resendClickTracking ?? false,
                     resendOpenTracking: resendOpenTracking ?? false,
+                    triggeredBy: "scheduled",
                 }),
             });
 

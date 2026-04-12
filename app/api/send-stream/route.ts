@@ -44,6 +44,7 @@ export async function POST(request: Request) {
         resendClickTracking = false, resendOpenTracking = false,
         overrideSubscriberIds,  // optional: caller-supplied list bypasses campaign's own targeting
         scheduledAt,    // for type: "schedule"
+        triggeredBy = "manual",  // "manual" | "scheduled" | "rotation"
     } = body;
 
     // ── Schedule: save to DB + fire Inngest event ───────────────────────────
@@ -89,11 +90,35 @@ export async function POST(request: Request) {
     // ── Broadcast: streaming NDJSON send ────────────────────────────────────
     const encoder = new TextEncoder();
 
+    // Accumulated log records for DB persistence
+    const accumulatedLogs: Array<{ ts: string; level: string; message: string; [k: string]: any }> = [];
+
+    // Create a pending send_logs record immediately so we can track even failed sends
+    let sendLogId: string | null = null;
+    try {
+        const { data: logRow } = await supabaseAdmin
+            .from("send_logs")
+            .insert({ campaign_id: campaignId, triggered_by: triggeredBy, status: "pending" })
+            .select("id")
+            .single();
+        sendLogId = logRow?.id ?? null;
+    } catch { /* non-fatal */ }
+
     const stream = new ReadableStream({
         async start(controller) {
+            // Wrap sendLog to also accumulate into our DB log array
+            const log = (
+                level: "info" | "success" | "warn" | "error",
+                message: string,
+                meta?: Record<string, any>
+            ) => {
+                accumulatedLogs.push({ ts: new Date().toISOString(), level, message, ...(meta || {}) });
+                sendLog(controller, encoder, level, message, meta);
+            };
+
             try {
                 // Fetch campaign
-                sendLog(controller, encoder, "info", "Fetching campaign data...");
+                log("info", "Fetching campaign data...");
                 const { data: campaign, error: campaignError } = await supabaseAdmin
                     .from("campaigns")
                     .select("*")
@@ -101,13 +126,13 @@ export async function POST(request: Request) {
                     .single();
 
                 if (campaignError || !campaign) {
-                    sendLog(controller, encoder, "error", `Campaign not found: ${campaignError?.message || "unknown"}`);
+                    log("error", `Campaign not found: ${campaignError?.message || "unknown"}`);
                     controller.close();
                     return;
                 }
 
-                sendLog(controller, encoder, "info", `Campaign: "${campaign.name}"`);
-                sendLog(controller, encoder, "info", `Tracking flags — click: ${clickTracking}, open: ${openTracking}, resendClick: ${resendClickTracking}, resendOpen: ${resendOpenTracking}`);
+                log("info", `Campaign: "${campaign.name}"`);
+                log("info", `Tracking flags — click: ${clickTracking}, open: ${openTracking}, resendClick: ${resendClickTracking}, resendOpen: ${resendOpenTracking}`);
 
                 // Render global template
                 const subscriberVars = STANDARD_TAGS;
@@ -145,22 +170,21 @@ export async function POST(request: Request) {
                         .single();
 
                     if (childError || !child) {
-                        sendLog(controller, encoder, "error", `Failed to create child campaign: ${childError?.message}`);
+                        log("error", `Failed to create child campaign: ${childError?.message}`);
                         controller.close();
                         return;
                     }
 
                     trackingCampaignId = child.id;
-                    sendLog(controller, encoder, "info", `Created child campaign ${trackingCampaignId} from template`);
+                    log("info", `Created child campaign ${trackingCampaignId} from template`);
                 }
 
                 // Fetch recipients
-                sendLog(controller, encoder, "info", "Fetching recipients...");
+                log("info", "Fetching recipients...");
                 const lockedSubscriberId = campaign.variable_values?.subscriber_id;
                 const lockedSubscriberIds: string[] | undefined = campaign.variable_values?.subscriber_ids;
                 let query = supabaseAdmin.from("subscribers").select("*").eq("status", "active");
                 if (overrideSubscriberIds?.length > 0) {
-                    // Caller-supplied list (e.g. from send-rotation) takes highest priority
                     query = query.in("id", overrideSubscriberIds);
                 } else if (lockedSubscriberIds && lockedSubscriberIds.length > 0) {
                     query = query.in("id", lockedSubscriberIds);
@@ -171,12 +195,12 @@ export async function POST(request: Request) {
                 const { data: recipients, error: recipientError } = await query;
 
                 if (recipientError || !recipients || recipients.length === 0) {
-                    sendLog(controller, encoder, "error", "No active subscribers found");
+                    log("error", "No active subscribers found");
                     controller.close();
                     return;
                 }
 
-                sendLog(controller, encoder, "info", `Found ${recipients.length} recipient(s)`, { total: recipients.length });
+                log("info", `Found ${recipients.length} recipient(s)`, { total: recipients.length });
 
                 const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "https://dreamplay-email-2.vercel.app";
 
@@ -191,15 +215,14 @@ export async function POST(request: Request) {
                 const htmlWithFooter = htmlContent + unsubscribeFooter;
                 const htmlWithVideoOverlay = await addPlayButtonsToVideoThumbnails(htmlWithFooter);
 
-                // ── Proxy external images → permanent Supabase URLs ───────────
-                // Runs AFTER video overlay so YouTube thumbnails are also compressed.
-                sendLog(controller, encoder, "info", "Proxying & optimizing images...");
+                // ── Proxy external images → permanent Supabase URLs ───
+                log("info", "Proxying & optimizing images...");
                 const htmlProxied = await proxyEmailImages(htmlWithVideoOverlay);
                 const proxiedCount = (htmlProxied.match(/\/email-images\/(optimized|hashed)\//g) || []).length;
-                sendLog(controller, encoder, proxiedCount > 0 ? "success" : "warn",
+                log(proxiedCount > 0 ? "success" : "warn",
                     proxiedCount > 0
                         ? `✅ ${proxiedCount} image(s) optimized & proxied to CDN`
-                        : "⚠️  No images were proxied — check Vercel logs for proxy errors"
+                        : "⚠️  No images were proxied — check send logs for proxy errors"
                 );
                 const htmlFinal = htmlProxied;
 
@@ -228,7 +251,7 @@ export async function POST(request: Request) {
                     const progress = `[${ri + 1}/${recipients.length}]`;
 
                     try {
-                        sendLog(controller, encoder, "info", `${progress} Processing ${sub.email}...`);
+                        log("info", `${progress} Processing ${sub.email}...`);
 
                         const unsubscribeUrl = `${baseUrl}/unsubscribe?s=${sub.id}&c=${trackingCampaignId}&w=${campaign.workspace}`;
 
@@ -255,7 +278,7 @@ export async function POST(request: Request) {
                                         ...(slot.config.expiresOn ? { expiresOn: slot.config.expiresOn } : {}),
                                     });
                                     if (discountRes.success && discountRes.code) {
-                                        sendLog(controller, encoder, "info", `${progress} Generated discount code: ${discountRes.code}`);
+                                        log("info", `${progress} Generated discount code: ${discountRes.code}`);
                                         if (slot.preview_code) {
                                             personalHtml = personalHtml.replaceAll(slot.preview_code, discountRes.code);
                                         }
@@ -274,7 +297,7 @@ export async function POST(request: Request) {
                                         }
                                     }
                                 } catch (discountErr) {
-                                    sendLog(controller, encoder, "warn", `${progress} Discount generation failed for slot ${slot.config.codePrefix}`);
+                                    log("warn", `${progress} Discount generation failed for slot ${slot.config.codePrefix}`);
                                 }
                             }
                             if (ri < recipients.length - 1) {
@@ -297,7 +320,7 @@ export async function POST(request: Request) {
                                 const trackUrl = `${baseUrl}/api/track/click?u=${encodeURIComponent(cleanUrl)}&c=${trackingCampaignId}&s=${sub.id}`;
                                 return `href=${quote}${trackUrl}${quote}`;
                             });
-                            sendLog(controller, encoder, "info", `${progress} Click tracking: links rewritten`);
+                            log("info", `${progress} Click tracking: links rewritten`);
                         } else {
                             personalHtml = personalHtml.replace(/href=(["'])(https?:\/\/[^"']+)\1/g, (match, quote, url) => {
                                 if (url.includes('/unsubscribe')) return match;
@@ -321,12 +344,12 @@ export async function POST(request: Request) {
                             if (!personalHtml.includes(openPixel)) {
                                 personalHtml += openPixel;
                             }
-                            sendLog(controller, encoder, "success", `${progress} Open pixel INJECTED for ${sub.email}`, {
+                            log("success", `${progress} Open pixel INJECTED for ${sub.email}`, {
                                 hadBodyTag: hadBody,
                                 pixelUrl: `${baseUrl}/api/track/open?c=${trackingCampaignId}&s=${sub.id}`,
                             });
                         } else {
-                            sendLog(controller, encoder, "warn", `${progress} Open pixel SKIPPED for ${sub.email} (openTracking=false)`);
+                            log("warn", `${progress} Open pixel SKIPPED for ${sub.email} (openTracking=false)`);
                         }
 
                         // Merge tags in subject
@@ -335,11 +358,10 @@ export async function POST(request: Request) {
                         // Log merge tag replacements
                         if (mergeTagLog && Object.keys(mergeTagLog).length > 0) {
                             const tagCount = Object.keys(mergeTagLog).length;
-                            sendLog(controller, encoder, "info", `${progress} Merge tags resolved: ${tagCount} tag(s)`);
+                            log("info", `${progress} Merge tags resolved: ${tagCount} tag(s)`);
                         }
 
                         // Send via Resend
-                        // from field resolution: explicit args → campaign.variable_values → env fallback
                         const resolvedFromName = fromName || campaign.variable_values?.from_name;
                         const resolvedFromEmail = fromEmail || campaign.variable_values?.from_email;
                         const { data: sendData, error } = await resend.emails.send({
@@ -356,10 +378,10 @@ export async function POST(request: Request) {
                         } as any);
 
                         if (error) {
-                            sendLog(controller, encoder, "error", `${progress} ❌ FAILED: ${sub.email} — ${error.message}`);
+                            log("error", `${progress} ❌ FAILED: ${sub.email} — ${error.message}`);
                             failureCount++;
                         } else {
-                            sendLog(controller, encoder, "success", `${progress} ✅ Sent to ${sub.email}`, { resendId: sendData?.id });
+                            log("success", `${progress} ✅ Sent to ${sub.email}`, { resendId: sendData?.id });
                             successCount++;
                             if (!firstResendEmailId && sendData?.id) {
                                 firstResendEmailId = sendData.id;
@@ -373,7 +395,7 @@ export async function POST(request: Request) {
                             });
                         }
                     } catch (e: any) {
-                        sendLog(controller, encoder, "error", `${progress} Unexpected error for ${sub.email}: ${e.message}`);
+                        log("error", `${progress} Unexpected error for ${sub.email}: ${e.message}`);
                         failureCount++;
                     }
 
@@ -385,14 +407,15 @@ export async function POST(request: Request) {
 
                 // Insert history
                 if (sentRecords.length > 0) {
-                    sendLog(controller, encoder, "info", `Inserting ${sentRecords.length} history record(s)...`);
+                    log("info", `Inserting ${sentRecords.length} history record(s)...`);
                     const { error: historyError } = await supabaseAdmin.from("sent_history").insert(sentRecords);
                     if (historyError) {
-                        sendLog(controller, encoder, "warn", `Failed to insert history: ${historyError.message}`);
+                        log("warn", `Failed to insert history: ${historyError.message}`);
                     } else {
-                        sendLog(controller, encoder, "success", "History records saved");
+                        log("success", "History records saved");
                     }
                 }
+
 
                 // Update campaign status
                 const updateData: any = {
@@ -408,15 +431,35 @@ export async function POST(request: Request) {
 
                 // Final summary
                 const message = `Broadcast complete: ${successCount} sent, ${failureCount} failed out of ${recipients.length} recipients.`;
-                sendLog(controller, encoder, "success", `🎉 ${message}`, {
+                log("success", `🎉 ${message}`, {
                     done: true,
                     stats: { sent: successCount, failed: failureCount, total: recipients.length },
                     message,
                 });
 
             } catch (err: any) {
-                sendLog(controller, encoder, "error", `Fatal error: ${err.message}`);
+                log("error", `Fatal error: ${err.message}`);
             } finally {
+                // ── Persist all accumulated logs to send_logs table ───────────
+                if (sendLogId) {
+                    const imageLogs = accumulatedLogs.filter(l =>
+                        l.message.includes("[ImageProxy]") ||
+                        l.message.includes("[VideoOverlay]") ||
+                        l.message.includes("proxied") ||
+                        l.message.includes("optimized")
+                    );
+                    const lastEntry = accumulatedLogs[accumulatedLogs.length - 1];
+                    const isDone = lastEntry?.done === true;
+                    const stats = lastEntry?.stats;
+                    await supabaseAdmin.from("send_logs").update({
+                        status: isDone ? "success" : "error",
+                        summary: stats ?? null,
+                        image_logs: imageLogs.length > 0 ? imageLogs : null,
+                        raw_log: accumulatedLogs.map(l =>
+                            `[${l.ts}] [${l.level.toUpperCase()}] ${l.message}`
+                        ).join("\n"),
+                    }).eq("id", sendLogId);
+                }
                 controller.close();
             }
         }
