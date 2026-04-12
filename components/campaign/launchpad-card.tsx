@@ -22,6 +22,41 @@ interface LaunchpadCardProps {
 const HOURS = Array.from({ length: 24 }, (_, i) => i)
 const MINUTES = [0, 15, 30, 45]
 
+/** Returns the next 15-minute boundary in Pacific Time. */
+function getDefaultScheduleTime(): { date: Date; hour: number; minute: number } {
+    const now = new Date()
+    // Read current wall-clock values in Pacific Time
+    const ptParts = new Intl.DateTimeFormat("en-US", {
+        timeZone: "America/Los_Angeles",
+        year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", second: "2-digit",
+        hour12: false,
+    }).formatToParts(now)
+    const get = (t: string) => parseInt(ptParts.find(p => p.type === t)?.value ?? "0", 10)
+    const ptMinute = get("minute")
+    const ptHour = get("hour") % 24  // 24 → 0 (midnight edge case)
+
+    // Round up to the next 15-min boundary
+    const minutesOver = ptMinute % 15
+    const minutesToAdd = minutesOver === 0 ? 15 : 15 - minutesOver
+    const totalMinutes = ptHour * 60 + ptMinute + minutesToAdd
+    const nextHour = Math.floor(totalMinutes / 60) % 24
+    const nextMinute = totalMinutes % 60
+
+    // Build a Date for midnight in PT today, then advance by the target wall-clock minutes
+    // We do this by parsing a PT date string and offsetting
+    const ptDateStr = `${ptParts.find(p => p.type === "year")?.value}-${ptParts.find(p => p.type === "month")?.value}-${ptParts.find(p => p.type === "day")?.value}`
+    // If the next slot crosses midnight, we advance a day
+    const dayOffset = totalMinutes >= 24 * 60 ? 1 : 0
+    const targetDate = new Date(now)
+    targetDate.setMinutes(targetDate.getMinutes() + minutesToAdd, 0, 0)
+    // Construct a plain Date representing just the calendar date portion in PT
+    const calDate = new Date(`${ptDateStr}T00:00:00`)
+    if (dayOffset) calDate.setDate(calDate.getDate() + 1)
+
+    return { date: calDate, hour: nextHour, minute: nextMinute }
+}
+
 export function LaunchpadCard({
     subscriberCount,
     onLaunch,
@@ -37,6 +72,16 @@ export function LaunchpadCard({
     const [selectedMinute, setSelectedMinute] = useState<number | null>(null)
     const [calendarOpen, setCalendarOpen] = useState(false)
     const [timeOpen, setTimeOpen] = useState(false)
+
+    const openSchedulePicker = () => {
+        if (!showSchedulePicker) {
+            const defaults = getDefaultScheduleTime()
+            setSelectedDate(defaults.date)
+            setSelectedHour(defaults.hour)
+            setSelectedMinute(defaults.minute)
+        }
+        setShowSchedulePicker(!showSchedulePicker)
+    }
 
     const isScheduled = scheduledAt && scheduledStatus === "pending"
 
@@ -137,7 +182,7 @@ export function LaunchpadCard({
                             Send Now
                         </Button>
                         <Button
-                            onClick={() => setShowSchedulePicker(!showSchedulePicker)}
+                            onClick={openSchedulePicker}
                             disabled={isDisabled}
                             variant="outline"
                             size="lg"

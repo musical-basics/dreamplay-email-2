@@ -27,6 +27,33 @@ import { SendConsoleCard, type LogEntry } from "@/components/campaign/send-conso
 const HOURS = Array.from({ length: 24 }, (_, i) => i)
 const MINUTES = [0, 15, 30, 45]
 
+/** Returns the next 15-minute boundary in Pacific Time. */
+function getDefaultScheduleTime(): { date: Date; hour: number; minute: number } {
+    const now = new Date()
+    const ptParts = new Intl.DateTimeFormat("en-US", {
+        timeZone: "America/Los_Angeles",
+        year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", second: "2-digit",
+        hour12: false,
+    }).formatToParts(now)
+    const get = (t: string) => parseInt(ptParts.find(p => p.type === t)?.value ?? "0", 10)
+    const ptMinute = get("minute")
+    const ptHour = get("hour") % 24
+
+    const minutesOver = ptMinute % 15
+    const minutesToAdd = minutesOver === 0 ? 15 : 15 - minutesOver
+    const totalMinutes = ptHour * 60 + ptMinute + minutesToAdd
+    const nextHour = Math.floor(totalMinutes / 60) % 24
+    const nextMinute = totalMinutes % 60
+
+    const ptDateStr = `${ptParts.find(p => p.type === "year")?.value}-${ptParts.find(p => p.type === "month")?.value}-${ptParts.find(p => p.type === "day")?.value}`
+    const dayOffset = totalMinutes >= 24 * 60 ? 1 : 0
+    const calDate = new Date(`${ptDateStr}T00:00:00`)
+    if (dayOffset) calDate.setDate(calDate.getDate() + 1)
+
+    return { date: calDate, hour: nextHour, minute: nextMinute }
+}
+
 type SubscriberInfo = {
     id: string
     email: string
@@ -80,6 +107,16 @@ export function RotationLaunch({ rotation, subscribers, assignments, campaignMap
     const [scheduledAt, setScheduledAt] = useState<string | null>(rotation.scheduled_at || null)
     const [scheduledStatus, setScheduledStatus] = useState<string | null>(rotation.scheduled_status || null)
     const [scheduling, setScheduling] = useState(false)
+
+    const openSchedulePicker = () => {
+        if (!showSchedulePicker) {
+            const defaults = getDefaultScheduleTime()
+            setSelectedDate(defaults.date)
+            setSelectedHour(defaults.hour)
+            setSelectedMinute(defaults.minute)
+        }
+        setShowSchedulePicker(!showSchedulePicker)
+    }
 
     const isScheduled = scheduledAt && scheduledStatus === "pending"
     const { toast } = useToast()
@@ -327,7 +364,7 @@ export function RotationLaunch({ rotation, subscribers, assignments, campaignMap
                                 )}
                             </Button>
                             <Button
-                                onClick={() => setShowSchedulePicker(!showSchedulePicker)}
+                                onClick={openSchedulePicker}
                                 disabled={sending || sendStatus === "success"}
                                 variant="outline"
                                 className="gap-2 border-[#D4AF37]/30 text-[#D4AF37] hover:bg-[#D4AF37]/10"
