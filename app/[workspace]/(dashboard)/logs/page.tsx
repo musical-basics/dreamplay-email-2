@@ -5,12 +5,7 @@ import { ScrollText, RefreshCw, Trash2, Loader2, AlertCircle, AlertTriangle, Inf
 import { Button } from "@/components/ui/button"
 import { useToast } from "@/hooks/use-toast"
 import { getTriggerLogs, clearTriggerLogs, type TriggerLog } from "@/app/actions/trigger-logs"
-import { createClient } from "@supabase/supabase-js"
-
-const supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-)
+import { getSendLogs, type SendLog } from "@/app/actions/send-logs"
 
 const levelConfig = {
     info: { icon: Info, color: "text-blue-400", bg: "bg-blue-500/10", label: "INFO" },
@@ -19,17 +14,7 @@ const levelConfig = {
     success: { icon: CheckCircle2, color: "text-emerald-400", bg: "bg-emerald-500/10", label: "OK" },
 }
 
-type SendLog = {
-    id: string
-    campaign_id: string | null
-    triggered_by: string
-    status: string
-    summary: { sent: number; failed: number; total: number } | null
-    image_logs: Array<{ ts: string; level: string; message: string }> | null
-    raw_log: string | null
-    created_at: string
-    campaigns?: { name: string } | null
-}
+
 
 function formatTime(ts: string) {
     return new Date(ts).toLocaleString("en-US", {
@@ -47,14 +32,11 @@ function SendLogsTab() {
 
     const load = useCallback(async () => {
         setLoading(true)
-        const { data } = await supabase
-            .from("send_logs")
-            .select("*, campaigns(name)")
-            .order("created_at", { ascending: false })
-            .limit(100)
-        setLogs((data as SendLog[]) ?? [])
+        const data = await getSendLogs(100)
+        setLogs(data)
         setLoading(false)
     }, [])
+
 
     useEffect(() => { load() }, [load])
     useEffect(() => {
