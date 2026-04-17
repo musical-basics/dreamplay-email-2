@@ -276,6 +276,13 @@ export default function AudienceManagerPage() {
     const fetchSubscribers = async () => {
         setLoading(true)
 
+        // Never fetch without a workspace — filter would be bypassed and leak other workspaces
+        if (!workspace || typeof workspace !== 'string') {
+            setSubscribers([])
+            setLoading(false)
+            return
+        }
+
         // Fetch ALL subscribers in batches (Supabase caps at 1000 per request)
         const fetchAllSubscribers = async () => {
             const allData: any[] = []
@@ -288,6 +295,7 @@ export default function AudienceManagerPage() {
                     .eq("workspace", workspace)
                     .neq("status", "deleted")
                     .order("created_at", { ascending: false })
+                    .order("id", { ascending: true })
                     .range(from, from + batchSize - 1)
                 if (error) {
                     console.error("Error fetching subscribers:", error)
@@ -367,6 +375,7 @@ export default function AudienceManagerPage() {
     }
 
     useEffect(() => {
+        if (!workspace) return
         fetchSubscribers()
         fetchTagDefinitions()
         fetchUnsubHistory()
@@ -389,7 +398,7 @@ export default function AudienceManagerPage() {
                 }
             }
         })
-    }, [])
+    }, [workspace])
 
     const applyView = (view: SavedView) => {
         setSearchQuery(view.search_query)
