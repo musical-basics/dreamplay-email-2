@@ -94,16 +94,27 @@ export async function POST(request: Request) {
     // Accumulated log records for DB persistence
     const accumulatedLogs: Array<{ ts: string; level: string; message: string; [k: string]: any }> = [];
 
-    // Create a pending send_logs record immediately so we can track even failed sends
+    // Create a pending send_logs record immediately so we can track even failed sends.
+    // Errors here are non-fatal (we still want to send emails) but must surface so we
+    // don't silently lose observability — the 2026-04-17 stale-Inngest bug hid here for days.
     let sendLogId: string | null = null;
+    let sendLogError: string | null = null;
     try {
-        const { data: logRow } = await supabaseAdmin
+        const { data: logRow, error: logErr } = await supabaseAdmin
             .from("send_logs")
             .insert({ campaign_id: campaignId, triggered_by: triggeredBy, status: "pending" })
             .select("id")
             .single();
-        sendLogId = logRow?.id ?? null;
-    } catch { /* non-fatal */ }
+        if (logErr) {
+            sendLogError = `${logErr.message} (code: ${(logErr as any).code ?? "?"})`;
+            console.error("[send-stream] send_logs insert returned error:", logErr);
+        } else {
+            sendLogId = logRow?.id ?? null;
+        }
+    } catch (err: any) {
+        sendLogError = err?.message ?? "unknown exception";
+        console.error("[send-stream] send_logs insert threw:", err);
+    }
 
     // Persist accumulated logs to send_logs table
     const persistLogs = async () => {
@@ -482,6 +493,15 @@ export async function POST(request: Request) {
             done: lastEntry?.done ?? false,
             stats: lastEntry?.stats ?? null,
             logLines: accumulatedLogs.length,
+            sendLogId,
+            sendLogError,
+            // Surfacing the deploy SHA here lets the Inngest step output reveal
+            // stale-deployment drift at a glance (see docs/image-optimization-bug-diagnostic.md)
+            deploy: {
+                sha: process.env.VERCEL_GIT_COMMIT_SHA ?? null,
+                ref: process.env.VERCEL_GIT_COMMIT_REF ?? null,
+                url: process.env.VERCEL_URL ?? null,
+            },
         });
     }
 
