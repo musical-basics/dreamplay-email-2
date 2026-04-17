@@ -12,12 +12,14 @@ interface BulkAddDialogProps {
     open: boolean
     onOpenChange: (open: boolean) => void
     onComplete: () => void
+    workspace: string
 }
 
 export function BulkAddDialog({
     open,
     onOpenChange,
     onComplete,
+    workspace,
 }: BulkAddDialogProps) {
     const [bulkEmails, setBulkEmails] = useState("")
     const [bulkAdding, setBulkAdding] = useState(false)
@@ -53,9 +55,10 @@ export function BulkAddDialog({
             shipping_province: "",
             tags: [],
             status: "active" as const,
+            workspace,
         }))
 
-        const { error } = await supabase.from("subscribers").upsert(rows, { onConflict: "email", ignoreDuplicates: true })
+        const { error } = await supabase.from("subscribers").upsert(rows, { onConflict: "email,workspace", ignoreDuplicates: true })
 
         if (error) {
             toast({ title: "Error adding subscribers", description: error.message, variant: "destructive" })

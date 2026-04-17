@@ -327,20 +327,23 @@ export default function AudienceManagerPage() {
         setLoading(false)
     }
 
-    // Fetch subscriber IDs that have ever had an unsubscribe event
+    // Fetch subscriber IDs that have ever had an unsubscribe event (scoped to workspace)
     const fetchUnsubHistory = async () => {
+        if (!workspace) return
         const { data, error } = await supabase
             .from("subscriber_events")
-            .select("subscriber_id")
+            .select("subscriber_id, subscribers!inner(workspace)")
             .eq("type", "unsubscribe")
+            .eq("subscribers.workspace", workspace)
         if (!error && data) {
             setUnsubHistoryIds(new Set(data.map((r: { subscriber_id: string }) => r.subscriber_id)))
         }
     }
 
-    // Fetch subscriber IDs that have ever clicked a link or visited the website
+    // Fetch subscriber IDs that have ever clicked a link or visited the website (scoped to workspace)
     // Paginates through all rows to avoid Supabase's default 1000-row limit
     const fetchClickOrVisitHistory = async () => {
+        if (!workspace) return
         const ids = new Set<string>()
         let offset = 0
         const batchSize = 1000
@@ -349,8 +352,9 @@ export default function AudienceManagerPage() {
         while (!done) {
             const { data, error } = await supabase
                 .from("subscriber_events")
-                .select("subscriber_id")
+                .select("subscriber_id, subscribers!inner(workspace)")
                 .in("type", ["click", "page_view"])
+                .eq("subscribers.workspace", workspace)
                 .range(offset, offset + batchSize - 1)
 
             if (error || !data || data.length === 0) {
@@ -2284,6 +2288,7 @@ export default function AudienceManagerPage() {
                 open={isBulkAddOpen}
                 onOpenChange={setIsBulkAddOpen}
                 onComplete={fetchSubscribers}
+                workspace={workspace}
             />
 
             {/* CSV Import Dialog */}
