@@ -337,3 +337,47 @@ return (
 2. Send immediately (not scheduled)
 3. Check email — video thumbnail should be ~100-200KB (was ~1-2MB PNG)
 4. Send again — should use cached version from `email-images/video-thumbnails/`
+
+---
+
+## Resolution (2026-04-17) — Root Cause: Stale Inngest App Sync
+
+### Symptom
+
+Scheduled sends were delivering emails with oversized original-source image URLs (e.g. 3.2 MB PNG from `email-assets/`) instead of optimized Supabase CDN URLs (`email-images/optimized/*.jpg`). "Send now" was working correctly on the same campaigns. No rows appeared in `send_logs` for `triggered_by='scheduled'` for ~5 days, despite Inngest reporting runs as "Completed".
+
+### What we tried (in order)
+
+1. **Hypothesis: Sharp failing silently on Vercel Lambda cold-start** — the `image-proxy.ts` silent-failure returns (`return sourceUrl` on Sharp/upload errors) would produce exactly this symptom. Added a `ProxyLogger` type threaded through `proxyEmailImages` → `proxyImage` → `storeOriginal`/`optimizeAndStore` so proxy failures (stage + reason) land in `send_logs.image_logs`. Committed as `4b1cbf8`. **Didn't reveal the bug** — no `send_logs` row was being written at all.
+2. **Hypothesis: CHECK constraint rejecting `triggered_by='scheduled'`** — the try/catch around the `send_logs` insert in `send-stream/route.ts` would silently swallow a NOT NULL / CHECK violation. Queried `pg_constraint` — only FK + PK existed, no CHECK. **Ruled out.**
+3. **Hypothesis: Schema drift (NOT NULL column added without default)** — asked user to query `information_schema.columns`. Interrupted before we got there.
+4. **Actual root cause: Inngest's registered App URL was pointing at an old deployment.** The Inngest `send-broadcast` step output still contained a `message` field (`"Broadcast complete: 3 sent..."`). That field only exists in the **streaming NDJSON** final log line. The current sync-mode response at `send-stream/route.ts` returns `{done, stats, logLines}` with no `message`. For `message` to be present, the scheduled-send function had to be parsing the streaming response — meaning it was hitting a Vercel deployment that predated commit `c5a6713` (which added the `sync: true` path) and also predated commit `1cff49c` (which added the `send_logs` table writes).
+
+### Final fix
+
+- In the Inngest dashboard → Apps → `musical-basics-engine`, clicked **Resync app** against the production URL `https://email.dreamplaypianos.com/api/inngest`. Last-synced timestamp updated to the then-current time.
+- Forced two empty-commit redeploys (`119205e`, `a2dcd58`) to ensure Vercel was serving the latest bundle that Inngest was now pointed at.
+
+### Why it worked
+
+Once Inngest resynced, subsequent `campaign.scheduled-send` events invoked the current production deployment's `/api/inngest` handler, which loaded the up-to-date `scheduledCampaignSend` function. That function sends `sync: true` to `/api/send-stream`, which now:
+
+1. Inserts a `send_logs` row with `triggered_by='scheduled'` at the start of processing.
+2. Runs `proxyEmailImages` with the threaded logger, so every `[ImageProxy]` line is captured into `accumulatedLogs` and later persisted into `send_logs.image_logs`.
+3. Returns the sync JSON response `{done, stats, logLines}` that Inngest's step.run consumes.
+
+Verified end-to-end by the 6:15 AM and 6:30 AM EDT scheduled runs on 2026-04-17:
+- `send_logs.image_logs` contained the full `[ImageProxy]` trace showing `2/2 proxied, 0 failed`.
+- Gmail-received email image URLs resolved to `email-images/optimized/*.jpg` (confirmed via copy-image-address).
+
+### Why diagnosis was hard
+
+- **Silent failures at multiple layers.** The `send_logs` insert was wrapped in an empty `catch {}`; the image-proxy silent-failure returns predated the logger threading; Vercel functions running old code didn't throw errors, they just returned slightly different response shapes.
+- **Inngest reported "Completed" runs even against a stale deployment** — because the old deployment *was* sending emails correctly (it just wasn't optimizing images and wasn't writing logs).
+- **No user-visible error state.** Emails arrived. Campaigns updated to `scheduled_status='sent'`. Only downstream artifacts (image size, missing log rows) revealed the problem.
+
+### Preventative notes
+
+- When an Inngest function's behavior differs from its git source, check the Inngest app's registered URL and last-synced timestamp first. A Vercel deploy doesn't automatically re-register the function endpoint with Inngest Cloud if the app is pinned or hasn't hit the sync webhook.
+- The silent `catch {}` on the `send_logs` insert should be replaced with a logged error (or better, include the error in the response JSON) so future regressions surface immediately. See `app/api/send-stream/route.ts:99-106`.
+- An Inngest sync health check (e.g. comparing the app's last-synced time vs Vercel's latest deployment time) could be added as a cron-triggered assertion.
