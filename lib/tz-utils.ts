@@ -55,6 +55,11 @@ export function getTimeZoneOptions(): TzOption[] {
  *
  * Example: zonedWallClockToUtc(2026, 4, 17, 1, 15, "America/Los_Angeles")
  *          → Date representing 2026-04-17T08:15:00Z (1:15 AM PDT).
+ *
+ * Uses a two-pass convergence so that wall-clocks within 1 hour of a DST
+ * transition still resolve correctly: the TZ offset at the naive-UTC guess
+ * may differ from the offset at the actual target instant, so we sample
+ * offsets at both and reconcile.
  */
 export function zonedWallClockToUtc(
     year: number,
@@ -64,23 +69,30 @@ export function zonedWallClockToUtc(
     minute: number,
     tz: string
 ): Date {
-    // Build an instant AS IF these wall-clock values were UTC.
-    const naiveUtc = Date.UTC(year, month - 1, day, hour, minute, 0)
-    // Ask Intl what that UTC instant looks like in the target TZ.
-    const parts = new Intl.DateTimeFormat("en-US", {
-        timeZone: tz,
-        year: "numeric", month: "2-digit", day: "2-digit",
-        hour: "2-digit", minute: "2-digit", second: "2-digit",
-        hour12: false,
-    }).formatToParts(new Date(naiveUtc))
-    const get = (t: string) => parseInt(parts.find(p => p.type === t)?.value ?? "0", 10)
-    const tzUtc = Date.UTC(
-        get("year"), get("month") - 1, get("day"),
-        get("hour") % 24, get("minute"), get("second")
-    )
-    // Shift naiveUtc by the TZ offset at that instant to get the real UTC instant.
-    const offset = tzUtc - naiveUtc
-    return new Date(naiveUtc - offset)
+    // Interpret the wall-clock as if it were UTC — this is the target we're
+    // trying to hit once we've shifted by the TZ offset.
+    const targetAsUtc = Date.UTC(year, month - 1, day, hour, minute, 0)
+
+    // Offset (in ms) of `tz` at a given absolute UTC instant. Negative west of UTC.
+    const offsetAt = (utcMs: number): number => {
+        const wall = getWallClockInTz(new Date(utcMs), tz)
+        const wallAsUtc = Date.UTC(
+            wall.year, wall.month - 1, wall.day,
+            wall.hour, wall.minute, 0
+        )
+        return wallAsUtc - utcMs
+    }
+
+    // Pass 1: sample offset using the naive-UTC guess.
+    const offset1 = offsetAt(targetAsUtc)
+    const firstGuess = targetAsUtc - offset1
+
+    // Pass 2: sample offset at the first guess. Near DST transitions, these
+    // disagree — use offset2 (the offset at the actual target instant).
+    const offset2 = offsetAt(firstGuess)
+    const finalOffset = offset1 === offset2 ? offset1 : offset2
+
+    return new Date(targetAsUtc - finalOffset)
 }
 
 /** Get the wall-clock components of a UTC instant as seen in a given TZ. */

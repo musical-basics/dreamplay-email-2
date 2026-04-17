@@ -6,7 +6,8 @@
     "build": "next build",
     "dev": "next dev -p 3001 || next dev -p 4001",
     "lint": "eslint .",
-    "start": "next start"
+    "start": "next start",
+    "test": "node --test --experimental-strip-types 'lib/**/*.test.ts'"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.71.2",
