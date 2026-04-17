@@ -62,7 +62,7 @@ export async function POST(request: Request) {
         htmlContent = injectPreheader(htmlContent, campaign.variable_values?.preview_text);
         htmlContent = inlineStyles(htmlContent);
         htmlContent = await addPlayButtonsToVideoThumbnails(htmlContent); // inject video thumbnails first
-        htmlContent = await proxyEmailImages(htmlContent);                // then optimize all images (incl. thumbnails)
+        htmlContent = (await proxyEmailImages(htmlContent)).html;         // then optimize all images (incl. thumbnails)
 
         // Simulate subscriber for merge tags
         let simulationSubscriber = null;

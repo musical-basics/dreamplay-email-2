@@ -448,7 +448,7 @@ async function executeTriggers(subscriberTags: string[], subscriberId: string, s
 
                 // Render template (campaign variables + smart blocks)
                 let renderedHtml = renderTemplate(campaign.html_content, assets, subscriberTags);
-                renderedHtml = await proxyEmailImages(renderedHtml); // snapshot externals → permanent Supabase URLs
+                renderedHtml = (await proxyEmailImages(renderedHtml)).html; // snapshot externals → permanent Supabase URLs
 
                 // Apply merge tags (subscriber fields, global links, dynamic vars)
                 const { data: subscriberData } = await supabase

@@ -241,12 +241,22 @@ export async function POST(request: Request) {
 
             // ── Proxy external images → permanent Supabase URLs ───
             log("info", "Proxying & optimizing images...");
-            const htmlProxied = await proxyEmailImages(htmlWithVideoOverlay);
-            const proxiedCount = (htmlProxied.match(/\/email-images\/(optimized|hashed)\//g) || []).length;
-            log(proxiedCount > 0 ? "success" : "warn",
-                proxiedCount > 0
-                    ? `✅ ${proxiedCount} image(s) optimized & proxied to CDN`
-                    : "⚠️  No images were proxied — check send logs for proxy errors"
+            const { html: htmlProxied, stats: proxyStats } = await proxyEmailImages(htmlWithVideoOverlay, log);
+            const proxiedUrlCount = (htmlProxied.match(/\/email-images\/(optimized|hashed)\//g) || []).length;
+            if (proxyStats.failures.length > 0) {
+                log("error",
+                    `❌ ${proxyStats.failures.length} image(s) FAILED to proxy — recipients will receive original URLs`,
+                    { proxy_failures: proxyStats.failures }
+                );
+                for (const f of proxyStats.failures) {
+                    log("error", `[ImageProxy] FAILURE: stage=${f.stage} reason=${f.reason} url=${f.url}`);
+                }
+            }
+            log(proxyStats.proxied > 0 ? "success" : "warn",
+                proxyStats.proxied > 0
+                    ? `✅ ${proxyStats.proxied} image(s) optimized & proxied to CDN (${proxyStats.alreadyProxied} already cached, ${proxyStats.unchanged} failed, ${proxiedUrlCount} total proxied URLs in HTML)`
+                    : `⚠️  No images were proxied — scanned=${proxyStats.scanned}, alreadyProxied=${proxyStats.alreadyProxied}, failed=${proxyStats.unchanged}`,
+                { proxy_stats: proxyStats }
             );
             const htmlFinal = htmlProxied;
 

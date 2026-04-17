@@ -15,6 +15,11 @@
  *
  * Bucket  : email-images   (public read, service-role write)
  * NOTE: bucket file_size_limit is 5MB — all OPTIMIZED outputs are always ≤5MB JPEG
+ *
+ * Logger: callers can pass a `logger` function (see ProxyLogger). All stages
+ * emit through it so failures land in durable logs (e.g. send_logs.image_logs)
+ * instead of only Vercel function logs. Default logger mirrors the original
+ * console.log/warn/error behavior for backwards compatibility.
  */
 
 import { createClient } from "@supabase/supabase-js";
@@ -47,6 +52,32 @@ const EXT_TO_MIME: Record<string, string> = {
   avif: "image/avif",
   svg:  "image/svg+xml",
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Logger — threaded through all stages so callers can capture proxy events
+// into durable storage (e.g. send_logs table) instead of only Vercel logs.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type ProxyLogLevel = "info" | "success" | "warn" | "error";
+export type ProxyLogger = (
+  level: ProxyLogLevel,
+  message: string,
+  meta?: Record<string, any>
+) => void;
+
+const defaultLogger: ProxyLogger = (level, message) => {
+  if (level === "error") console.error(message);
+  else if (level === "warn") console.warn(message);
+  else console.log(message);
+};
+
+export interface ProxyStats {
+  scanned: number;
+  alreadyProxied: number;
+  proxied: number;
+  unchanged: number;  // attempted but returned original URL (failure indicator)
+  failures: Array<{ url: string; stage: string; reason: string }>;
+}
 
 function inferMimeFromUrl(url: string): string | null {
   try {
@@ -101,14 +132,25 @@ function isAlreadyProxied(url: string): boolean {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Core: proxy one image — always returns a URL (original on any failure)
+// Core: proxy one image — always returns a URL (original on any failure).
+// `outcome` is populated with stage + reason when the original URL is returned
+// so callers can surface the failure to durable storage.
 // ─────────────────────────────────────────────────────────────────────────────
 
-export async function proxyImage(imageUrl: string): Promise<string> {
+interface ProxyOutcome {
+  stage?: string;
+  reason?: string;
+}
+
+async function proxyImage(
+  imageUrl: string,
+  log: ProxyLogger,
+  outcome: ProxyOutcome
+): Promise<string> {
   const label = tag(imageUrl);
 
   if (isAlreadyProxied(imageUrl)) {
-    console.log(`[ImageProxy] ✅ Already proxied, skip: ${label}`);
+    log("info", `[ImageProxy] ✅ Already proxied, skip: ${label}`);
     return imageUrl;
   }
 
@@ -116,7 +158,9 @@ export async function proxyImage(imageUrl: string): Promise<string> {
   try {
     supabase = getSupabaseClient();
   } catch (err: any) {
-    console.error(`[ImageProxy] ❌ Cannot create Supabase client: ${err.message}`);
+    log("error", `[ImageProxy] ❌ Cannot create Supabase client: ${err.message}`);
+    outcome.stage = "init";
+    outcome.reason = err.message;
     return imageUrl;
   }
 
@@ -128,19 +172,21 @@ export async function proxyImage(imageUrl: string): Promise<string> {
       const cl = head.headers.get("content-length");
       headSize = cl ? parseInt(cl, 10) : null;
       const headType = head.headers.get("content-type") || "unknown";
-      console.log(`[ImageProxy] HEAD ${label} → HTTP ${head.status}, content-length=${headSize ?? "unknown"} bytes, content-type=${headType}`);
+      log("info", `[ImageProxy] HEAD ${label} → HTTP ${head.status}, content-length=${headSize ?? "unknown"} bytes, content-type=${headType}`);
       if (!head.ok) {
-        console.warn(`[ImageProxy] ⚠️  HEAD failed HTTP ${head.status} for ${label} — proceeding to GET anyway`);
+        log("warn", `[ImageProxy] ⚠️  HEAD failed HTTP ${head.status} for ${label} — proceeding to GET anyway`);
       }
     } catch (headErr: any) {
-      console.warn(`[ImageProxy] ⚠️  HEAD request failed for ${label}: ${headErr.message} — proceeding to GET`);
+      log("warn", `[ImageProxy] ⚠️  HEAD request failed for ${label}: ${headErr.message} — proceeding to GET`);
     }
 
     // ── 2. Download ────────────────────────────────────────────────────────
-    console.log(`[ImageProxy] GET ${imageUrl}`);
+    log("info", `[ImageProxy] GET ${imageUrl}`);
     const res = await fetch(imageUrl, { signal: AbortSignal.timeout(20_000) });
     if (!res.ok) {
-      console.error(`[ImageProxy] ❌ GET failed HTTP ${res.status} for ${label} — keeping original URL`);
+      log("error", `[ImageProxy] ❌ GET failed HTTP ${res.status} for ${label} — keeping original URL`);
+      outcome.stage = "get";
+      outcome.reason = `HTTP ${res.status}`;
       return imageUrl;
     }
 
@@ -158,13 +204,13 @@ export async function proxyImage(imageUrl: string): Promise<string> {
       ? serverContentType
       : (urlInferredMime ?? serverContentType ?? "application/octet-stream");
 
-    console.log(
+    log("info",
       `[ImageProxy] Downloaded ${label}: ${actualSizeKB}KB (${buf.length} bytes), ` +
       `server-content-type=${serverContentType || "none"}, resolved-type=${rawContentType}`
     );
 
     if (buf.length > WARN_BYTES) {
-      console.warn(`[ImageProxy] ⚠️  Large image: ${label} = ${actualSizeKB}KB (${buf.length} bytes) — threshold is ${WARN_BYTES} bytes`);
+      log("warn", `[ImageProxy] ⚠️  Large image: ${label} = ${actualSizeKB}KB (${buf.length} bytes) — threshold is ${WARN_BYTES} bytes`);
     }
 
     // ── 3. Route: optimize or store as-is ─────────────────────────────────
@@ -172,7 +218,7 @@ export async function proxyImage(imageUrl: string): Promise<string> {
     const exceedsThreshold  = buf.length > OPTIMIZE_BYTES;
     const shouldOptimize    = exceedsThreshold && inCompressFormats;
 
-    console.log(
+    log("info",
       `[ImageProxy] Decision for ${label}: ` +
       `size=${actualSizeKB}KB, threshold=${Math.round(OPTIMIZE_BYTES / 1024)}KB, ` +
       `exceedsThreshold=${exceedsThreshold}, inCompressFormats=${inCompressFormats}, ` +
@@ -180,19 +226,21 @@ export async function proxyImage(imageUrl: string): Promise<string> {
     );
 
     if (shouldOptimize) {
-      console.log(`[ImageProxy] → Running Sharp optimization on ${label} (${actualSizeKB}KB, ${rawContentType})...`);
-      return await optimizeAndStore(supabase, buf, imageUrl, rawContentType);
+      log("info", `[ImageProxy] → Running Sharp optimization on ${label} (${actualSizeKB}KB, ${rawContentType})...`);
+      return await optimizeAndStore(supabase, buf, imageUrl, rawContentType, log, outcome);
     } else {
       const reason = !inCompressFormats
         ? `non-compressible format (${rawContentType}) — URL-inferred=${urlInferredMime ?? "none"}`
         : `within size limit (${actualSizeKB}KB ≤ ${Math.round(OPTIMIZE_BYTES / 1024)}KB)`;
-      console.log(`[ImageProxy] → Storing as-is: ${reason}`);
-      return await storeOriginal(supabase, buf, imageUrl, rawContentType);
+      log("info", `[ImageProxy] → Storing as-is: ${reason}`);
+      return await storeOriginal(supabase, buf, imageUrl, rawContentType, log, outcome);
     }
 
   } catch (err: any) {
-    console.error(`[ImageProxy] ❌ Unexpected error for ${label}: ${err.message}`);
-    console.error(err.stack);
+    log("error", `[ImageProxy] ❌ Unexpected error for ${label}: ${err.message}`);
+    if (err.stack) log("error", `[ImageProxy] stack: ${err.stack}`);
+    outcome.stage = "unexpected";
+    outcome.reason = err.message;
     return imageUrl;
   }
 }
@@ -205,14 +253,16 @@ async function storeOriginal(
   supabase: ReturnType<typeof createClient>,
   buf: Buffer,
   sourceUrl: string,
-  contentType: string
+  contentType: string,
+  log: ProxyLogger,
+  outcome: ProxyOutcome
 ): Promise<string> {
   const label = tag(sourceUrl);
   const ext   = MIME_TO_EXT[contentType] ?? "bin";
   const hash  = crypto.createHash("sha256").update(buf).digest("hex");
   const path  = `hashed/${hash}.${ext}`;
 
-  console.log(`[ImageProxy] Checking dedup for ${label} → path=${path}`);
+  log("info", `[ImageProxy] Checking dedup for ${label} → path=${path}`);
 
   const { data: existing, error: listErr } = await supabase.storage.from(BUCKET).list("hashed", {
     search: `${hash}.${ext}`,
@@ -220,16 +270,16 @@ async function storeOriginal(
   });
 
   if (listErr) {
-    console.error(`[ImageProxy] ❌ Storage list error: ${listErr.message}`);
+    log("error", `[ImageProxy] ❌ Storage list error: ${listErr.message}`);
   }
 
   if (existing && existing.length > 0) {
     const { data: urlData } = supabase.storage.from(BUCKET).getPublicUrl(path);
-    console.log(`[ImageProxy] ✅ Cache hit (original): ${label} → ${urlData.publicUrl}`);
+    log("success", `[ImageProxy] ✅ Cache hit (original): ${label} → ${urlData.publicUrl}`);
     return urlData.publicUrl;
   }
 
-  console.log(`[ImageProxy] Uploading ${label} (${Math.round(buf.length / 1024)}KB) to ${path}...`);
+  log("info", `[ImageProxy] Uploading ${label} (${Math.round(buf.length / 1024)}KB) to ${path}...`);
   const { error } = await supabase.storage
     .from(BUCKET)
     .upload(path, buf, { contentType, upsert: false });
@@ -238,15 +288,17 @@ async function storeOriginal(
     if (error.message === "The resource already exists") {
       // Lost the race — that's fine, just return the URL
       const { data: urlData } = supabase.storage.from(BUCKET).getPublicUrl(path);
-      console.log(`[ImageProxy] ✅ Race-condition dedup: ${label} → ${urlData.publicUrl}`);
+      log("success", `[ImageProxy] ✅ Race-condition dedup: ${label} → ${urlData.publicUrl}`);
       return urlData.publicUrl;
     }
-    console.error(`[ImageProxy] ❌ Upload failed for ${label}: ${error.message} (status: ${(error as any).statusCode ?? "?"})`);
+    log("error", `[ImageProxy] ❌ Upload failed for ${label}: ${error.message} (status: ${(error as any).statusCode ?? "?"})`);
+    outcome.stage = "upload-original";
+    outcome.reason = `${error.message} (status: ${(error as any).statusCode ?? "?"})`;
     return sourceUrl;
   }
 
   const { data: urlData } = supabase.storage.from(BUCKET).getPublicUrl(path);
-  console.log(`[ImageProxy] ✅ Stored original: ${label} → ${urlData.publicUrl}`);
+  log("success", `[ImageProxy] ✅ Stored original: ${label} → ${urlData.publicUrl}`);
   return urlData.publicUrl;
 }
 
@@ -259,14 +311,16 @@ async function optimizeAndStore(
   supabase: ReturnType<typeof createClient>,
   buf: Buffer,
   sourceUrl: string,
-  originalContentType: string
+  originalContentType: string,
+  log: ProxyLogger,
+  outcome: ProxyOutcome
 ): Promise<string> {
   const label = tag(sourceUrl);
   const configSuffix = `w${TARGET_WIDTH}q${JPEG_QUALITY}`;
   const cacheKey = crypto.createHash("sha256").update(sourceUrl + configSuffix).digest("hex");
   const path = `optimized/${cacheKey}.jpg`;
 
-  console.log(`[ImageProxy] Checking optimized cache for ${label} → ${path}`);
+  log("info", `[ImageProxy] Checking optimized cache for ${label} → ${path}`);
 
   const { data: existing, error: listErr } = await supabase.storage.from(BUCKET).list("optimized", {
     search: `${cacheKey}.jpg`,
@@ -274,24 +328,24 @@ async function optimizeAndStore(
   });
 
   if (listErr) {
-    console.error(`[ImageProxy] ❌ Storage list error for optimized: ${listErr.message}`);
+    log("error", `[ImageProxy] ❌ Storage list error for optimized: ${listErr.message}`);
   }
 
   if (existing && existing.length > 0) {
     const { data: urlData } = supabase.storage.from(BUCKET).getPublicUrl(path);
-    console.log(`[ImageProxy] ✅ Cache hit (optimized): ${label} → ${urlData.publicUrl}`);
+    log("success", `[ImageProxy] ✅ Cache hit (optimized): ${label} → ${urlData.publicUrl}`);
     return urlData.publicUrl;
   }
 
   // Run Sharp
-  console.log(`[ImageProxy] Running Sharp on ${label} (${Math.round(buf.length / 1024)}KB, ${originalContentType})...`);
+  log("info", `[ImageProxy] Running Sharp on ${label} (${Math.round(buf.length / 1024)}KB, ${originalContentType})...`);
   let meta: sharp.Metadata;
   let optimizedBuf: Buffer;
 
   try {
     const image = sharp(buf);
     meta = await image.metadata();
-    console.log(`[ImageProxy] Sharp metadata: ${meta.width}×${meta.height}, format=${meta.format}`);
+    log("info", `[ImageProxy] Sharp metadata: ${meta.width}×${meta.height}, format=${meta.format}`);
 
     optimizedBuf = await image
       .resize({ width: TARGET_WIDTH, withoutEnlargement: true })
@@ -300,7 +354,7 @@ async function optimizeAndStore(
 
     // Sanity check: if the output is suspiciously small, retry at higher quality
     if (optimizedBuf.length < MIN_OUTPUT_BYTES) {
-      console.warn(
+      log("warn",
         `[ImageProxy] ⚠️  Output suspiciously small: ${Math.round(optimizedBuf.length / 1024)}KB ` +
         `(< ${Math.round(MIN_OUTPUT_BYTES / 1024)}KB threshold). ` +
         `Retrying at quality=${JPEG_QUALITY_FALLBACK}...`
@@ -309,25 +363,28 @@ async function optimizeAndStore(
         .resize({ width: TARGET_WIDTH, withoutEnlargement: true })
         .jpeg({ quality: JPEG_QUALITY_FALLBACK, mozjpeg: true })
         .toBuffer();
-      console.log(`[ImageProxy] Retry output: ${Math.round(optimizedBuf.length / 1024)}KB`);
+      log("info", `[ImageProxy] Retry output: ${Math.round(optimizedBuf.length / 1024)}KB`);
     }
 
     const outMeta = await sharp(optimizedBuf).metadata();
-    console.log(
+    log("info",
       `[ImageProxy] Sharp output: ${outMeta.width}×${outMeta.height} JPEG, ` +
       `${Math.round(buf.length / 1024)}KB → ${Math.round(optimizedBuf.length / 1024)}KB ` +
       `(${Math.round((1 - optimizedBuf.length / buf.length) * 100)}% savings)`
     );
   } catch (sharpErr: any) {
-    console.error(`[ImageProxy] ❌ Sharp failed for ${label}: ${sharpErr.message}`);
+    log("error", `[ImageProxy] ❌ Sharp failed for ${label}: ${sharpErr.message}`);
+    if (sharpErr.stack) log("error", `[ImageProxy] Sharp stack: ${sharpErr.stack}`);
     // Return original URL — do NOT fall back to storeOriginal().
     // Storing in hashed/ would poison the cache: isAlreadyProxied would
     // permanently skip this image on all future sends.
-    console.log(`[ImageProxy] ⚠️  Returning original URL to allow retry on next send.`);
+    log("warn", `[ImageProxy] ⚠️  Returning original URL to allow retry on next send.`);
+    outcome.stage = "sharp";
+    outcome.reason = sharpErr.message;
     return sourceUrl;
   }
 
-  console.log(`[ImageProxy] Uploading optimized ${label} (${Math.round(optimizedBuf.length / 1024)}KB) to ${path}...`);
+  log("info", `[ImageProxy] Uploading optimized ${label} (${Math.round(optimizedBuf.length / 1024)}KB) to ${path}...`);
   const { error } = await supabase.storage
     .from(BUCKET)
     .upload(path, optimizedBuf, { contentType: "image/jpeg", upsert: false });
@@ -335,18 +392,20 @@ async function optimizeAndStore(
   if (error) {
     if (error.message === "The resource already exists") {
       const { data: urlData } = supabase.storage.from(BUCKET).getPublicUrl(path);
-      console.log(`[ImageProxy] ✅ Race-condition dedup (optimized): ${label} → ${urlData.publicUrl}`);
+      log("success", `[ImageProxy] ✅ Race-condition dedup (optimized): ${label} → ${urlData.publicUrl}`);
       return urlData.publicUrl;
     }
-    console.error(`[ImageProxy] ❌ Optimized upload failed for ${label}: ${error.message} (status: ${(error as any).statusCode ?? "?"})`);
+    log("error", `[ImageProxy] ❌ Optimized upload failed for ${label}: ${error.message} (status: ${(error as any).statusCode ?? "?"})`);
     // Return original URL — do NOT fall back to storeOriginal().
     // A failed upload must not be cached into hashed/ or it poisons future sends.
-    console.log(`[ImageProxy] ⚠️  Returning original URL to allow retry on next send.`);
+    log("warn", `[ImageProxy] ⚠️  Returning original URL to allow retry on next send.`);
+    outcome.stage = "upload-optimized";
+    outcome.reason = `${error.message} (status: ${(error as any).statusCode ?? "?"})`;
     return sourceUrl;
   }
 
   const { data: urlData } = supabase.storage.from(BUCKET).getPublicUrl(path);
-  console.log(`[ImageProxy] ✅ Stored optimized: ${label} → ${urlData.publicUrl}`);
+  log("success", `[ImageProxy] ✅ Stored optimized: ${label} → ${urlData.publicUrl}`);
   return urlData.publicUrl;
 }
 
@@ -354,8 +413,20 @@ async function optimizeAndStore(
 // Main entry: scan HTML and proxy/optimize all external images
 // ─────────────────────────────────────────────────────────────────────────────
 
-export async function proxyEmailImages(html: string): Promise<string> {
-  if (!html) return html;
+export async function proxyEmailImages(
+  html: string,
+  logger?: ProxyLogger
+): Promise<{ html: string; stats: ProxyStats }> {
+  const log = logger ?? defaultLogger;
+  const stats: ProxyStats = {
+    scanned: 0,
+    alreadyProxied: 0,
+    proxied: 0,
+    unchanged: 0,
+    failures: [],
+  };
+
+  if (!html) return { html, stats };
 
   // Collect all external HTTP image URLs from:
   //   1. src="..." attributes  (standard <img> tags)
@@ -389,40 +460,56 @@ export async function proxyEmailImages(html: string): Promise<string> {
     }
   }
 
-  console.log(
+  stats.scanned = allUrls.size + alreadyProxied.size;
+  stats.alreadyProxied = alreadyProxied.size;
+
+  log("info",
     `[ImageProxy] Scan complete: ${allUrls.size} to-proxy, ` +
     `${alreadyProxied.size} already-proxied/hashed (skipped). ` +
-    `Total unique found: ${allUrls.size + alreadyProxied.size}`
+    `Total unique found: ${stats.scanned}`
   );
 
   if (alreadyProxied.size > 0) {
     Array.from(alreadyProxied).forEach((u, i) =>
-      console.log(`[ImageProxy]   [SKIP ${i + 1}] Already proxied: ${tag(u)}`)
+      log("info", `[ImageProxy]   [SKIP ${i + 1}] Already proxied: ${tag(u)}`)
     );
   }
 
   if (allUrls.size === 0) {
-    console.log("[ImageProxy] Nothing to proxy — all images already optimized or none present.");
-    return html;
+    log("info", "[ImageProxy] Nothing to proxy — all images already optimized or none present.");
+    return { html, stats };
   }
 
-  console.log(`[ImageProxy] ═══ Starting proxy for ${allUrls.size} unique external URL(s) ═══`);
-  Array.from(allUrls).forEach((u, i) => console.log(`[ImageProxy]   [${i + 1}] ${u}`));
+  log("info", `[ImageProxy] ═══ Starting proxy for ${allUrls.size} unique external URL(s) ═══`);
+  Array.from(allUrls).forEach((u, i) => log("info", `[ImageProxy]   [${i + 1}] ${u}`));
 
   // Proxy all unique URLs in parallel
   const urlMap = new Map<string, string>();
+  const outcomeMap = new Map<string, ProxyOutcome>();
   await Promise.all(
     Array.from(allUrls).map(async (url) => {
-      const proxied = await proxyImage(url);
+      const outcome: ProxyOutcome = {};
+      outcomeMap.set(url, outcome);
+      const proxied = await proxyImage(url, log, outcome);
       urlMap.set(url, proxied);
     })
   );
 
   // Summary
-  console.log(`[ImageProxy] ═══ Proxy results ═══`);
+  log("info", `[ImageProxy] ═══ Proxy results ═══`);
   for (const [original, proxied] of urlMap) {
     const changed = original !== proxied;
-    console.log(`[ImageProxy]   ${changed ? "✅ PROXIED" : "⚠️  UNCHANGED"}: ${tag(original)} → ${changed ? proxied : "(original URL kept)"}`);
+    if (changed) {
+      stats.proxied++;
+      log("success", `[ImageProxy]   ✅ PROXIED: ${tag(original)} → ${proxied}`);
+    } else {
+      stats.unchanged++;
+      const outcome = outcomeMap.get(original);
+      const reason = outcome?.reason ?? "unknown";
+      const stage = outcome?.stage ?? "unknown";
+      stats.failures.push({ url: original, stage, reason });
+      log("warn", `[ImageProxy]   ⚠️  UNCHANGED (original URL kept): ${tag(original)} — stage=${stage}, reason=${reason}`);
+    }
   }
 
   // Replace all occurrences in the HTML
@@ -434,8 +521,7 @@ export async function proxyEmailImages(html: string): Promise<string> {
     }
   }
 
-  const proxiedCount = Array.from(urlMap.entries()).filter(([o, p]) => o !== p).length;
-  console.log(`[ImageProxy] ═══ Done: ${proxiedCount}/${allUrls.size} proxied ═══`);
+  log("info", `[ImageProxy] ═══ Done: ${stats.proxied}/${allUrls.size} proxied, ${stats.unchanged} failed ═══`);
 
-  return rewritten;
+  return { html: rewritten, stats };
 }
