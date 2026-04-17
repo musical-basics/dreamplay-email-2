@@ -1,13 +1,23 @@
 "use client"
 
-import { useState, useRef, useEffect } from "react"
-import { Rocket, AlertTriangle, CalendarClock, X, Clock, CalendarIcon } from "lucide-react"
+import { useState, useRef, useEffect, useMemo } from "react"
+import { Rocket, AlertTriangle, CalendarClock, X, Clock, CalendarIcon, Globe } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Calendar } from "@/components/ui/calendar"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import {
+    PACIFIC_TZ,
+    getBrowserTimeZone,
+    getTimeZoneOptions,
+    zonedWallClockToUtc,
+    getWallClockInTz,
+    formatInTimeZone,
+    getTimeZoneAbbreviation,
+} from "@/lib/tz-utils"
 
 interface LaunchpadCardProps {
     subscriberCount: number
@@ -22,38 +32,19 @@ interface LaunchpadCardProps {
 const HOURS = Array.from({ length: 24 }, (_, i) => i)
 const MINUTES = [0, 15, 30, 45]
 
-/** Returns the next 15-minute boundary in Pacific Time. */
-function getDefaultScheduleTime(): { date: Date; hour: number; minute: number } {
+/** Returns the next 15-minute boundary in the given TZ. */
+function getDefaultScheduleTime(tz: string): { date: Date; hour: number; minute: number } {
     const now = new Date()
-    // Read current wall-clock values in Pacific Time
-    const ptParts = new Intl.DateTimeFormat("en-US", {
-        timeZone: "America/Los_Angeles",
-        year: "numeric", month: "2-digit", day: "2-digit",
-        hour: "2-digit", minute: "2-digit", second: "2-digit",
-        hour12: false,
-    }).formatToParts(now)
-    const get = (t: string) => parseInt(ptParts.find(p => p.type === t)?.value ?? "0", 10)
-    const ptMinute = get("minute")
-    const ptHour = get("hour") % 24  // 24 → 0 (midnight edge case)
-
-    // Round up to the next 15-min boundary
-    const minutesOver = ptMinute % 15
+    const wall = getWallClockInTz(now, tz)
+    const minutesOver = wall.minute % 15
     const minutesToAdd = minutesOver === 0 ? 15 : 15 - minutesOver
-    const totalMinutes = ptHour * 60 + ptMinute + minutesToAdd
+    const totalMinutes = wall.hour * 60 + wall.minute + minutesToAdd
+    const dayOffset = totalMinutes >= 24 * 60 ? 1 : 0
     const nextHour = Math.floor(totalMinutes / 60) % 24
     const nextMinute = totalMinutes % 60
-
-    // Build a Date for midnight in PT today, then advance by the target wall-clock minutes
-    // We do this by parsing a PT date string and offsetting
-    const ptDateStr = `${ptParts.find(p => p.type === "year")?.value}-${ptParts.find(p => p.type === "month")?.value}-${ptParts.find(p => p.type === "day")?.value}`
-    // If the next slot crosses midnight, we advance a day
-    const dayOffset = totalMinutes >= 24 * 60 ? 1 : 0
-    const targetDate = new Date(now)
-    targetDate.setMinutes(targetDate.getMinutes() + minutesToAdd, 0, 0)
-    // Construct a plain Date representing just the calendar date portion in PT
-    const calDate = new Date(`${ptDateStr}T00:00:00`)
-    if (dayOffset) calDate.setDate(calDate.getDate() + 1)
-
+    // Calendar picker expects a local-midnight Date whose Y/M/D components
+    // equal the picked date (TZ-agnostic).
+    const calDate = new Date(wall.year, wall.month - 1, wall.day + dayOffset)
     return { date: calDate, hour: nextHour, minute: nextMinute }
 }
 
@@ -66,6 +57,8 @@ export function LaunchpadCard({
     scheduledAt,
     scheduledStatus,
 }: LaunchpadCardProps) {
+    const [timeZone, setTimeZone] = useState<string>(() => getBrowserTimeZone())
+    const tzOptions = useMemo(() => getTimeZoneOptions(), [])
     const [showSchedulePicker, setShowSchedulePicker] = useState(false)
     const [selectedDate, setSelectedDate] = useState<Date | undefined>(undefined)
     const [selectedHour, setSelectedHour] = useState<number | null>(null)
@@ -85,7 +78,7 @@ export function LaunchpadCard({
 
     const openSchedulePicker = () => {
         if (!showSchedulePicker) {
-            const defaults = getDefaultScheduleTime()
+            const defaults = getDefaultScheduleTime(timeZone)
             setSelectedDate(defaults.date)
             setSelectedHour(defaults.hour)
             setSelectedMinute(defaults.minute)
@@ -95,28 +88,27 @@ export function LaunchpadCard({
 
     const isScheduled = scheduledAt && scheduledStatus === "pending"
 
+    /** Build the absolute UTC instant from the picker components + selected TZ. */
+    const buildScheduledInstant = (): Date | null => {
+        if (!selectedDate || selectedHour === null || selectedMinute === null) return null
+        return zonedWallClockToUtc(
+            selectedDate.getFullYear(),
+            selectedDate.getMonth() + 1,
+            selectedDate.getDate(),
+            selectedHour,
+            selectedMinute,
+            timeZone,
+        )
+    }
+
     const handleScheduleSubmit = () => {
-        if (!selectedDate || selectedHour === null || selectedMinute === null) return
-        const dt = new Date(selectedDate)
-        dt.setHours(selectedHour, selectedMinute, 0, 0)
-        if (dt <= new Date()) return
-        onSchedule(dt)
+        const instant = buildScheduledInstant()
+        if (!instant || instant <= new Date()) return
+        onSchedule(instant)
         setShowSchedulePicker(false)
         setSelectedDate(undefined)
         setSelectedHour(null)
         setSelectedMinute(null)
-    }
-
-    const formatScheduledTime = (isoString: string) => {
-        const d = new Date(isoString)
-        return d.toLocaleString("en-US", {
-            weekday: "short",
-            month: "short",
-            day: "numeric",
-            hour: "numeric",
-            minute: "2-digit",
-            hour12: true,
-        })
     }
 
     const formatSelectedDate = (date: Date) => {
@@ -134,14 +126,10 @@ export function LaunchpadCard({
         return `${h}:${m} ${period}`
     }
 
-    const isPastTime = (() => {
-        if (!selectedDate || selectedHour === null || selectedMinute === null) return false
-        const candidate = new Date(selectedDate)
-        candidate.setHours(selectedHour, selectedMinute, 0, 0)
-        return candidate <= new Date()
-    })()
-
-    const canConfirm = selectedDate && selectedHour !== null && selectedMinute !== null && !isPastTime
+    const pickerInstant = buildScheduledInstant()
+    const isPastTime = pickerInstant !== null && pickerInstant <= new Date()
+    const canConfirm = pickerInstant !== null && !isPastTime
+    const isPacific = timeZone === PACIFIC_TZ
 
     return (
         <Card className="border-2 border-[#D4AF37]/30 bg-gradient-to-b from-[#D4AF37]/5 to-transparent">
@@ -164,27 +152,35 @@ export function LaunchpadCard({
                     </p>
                 </div>
 
-                {/* Scheduled indicator */}
-                {isScheduled && (
-                    <div className="flex items-center justify-between rounded-lg border border-sky-500/20 bg-sky-500/5 p-3">
-                        <div className="flex items-center gap-2">
-                            <Clock className="h-4 w-4 text-sky-400" />
-                            <div>
-                                <p className="text-sm font-medium text-sky-300">Scheduled</p>
-                                <p className="text-xs text-muted-foreground">{formatScheduledTime(scheduledAt!)}</p>
+                {/* Scheduled indicator — shows selected TZ + Pacific equivalent */}
+                {isScheduled && (() => {
+                    const d = new Date(scheduledAt!)
+                    const localLabel = `${formatInTimeZone(d, timeZone)} ${getTimeZoneAbbreviation(d, timeZone)}`
+                    const pacificLabel = `${formatInTimeZone(d, PACIFIC_TZ)} ${getTimeZoneAbbreviation(d, PACIFIC_TZ)}`
+                    return (
+                        <div className="flex items-center justify-between rounded-lg border border-sky-500/20 bg-sky-500/5 p-3">
+                            <div className="flex items-center gap-2">
+                                <Clock className="h-4 w-4 text-sky-400" />
+                                <div>
+                                    <p className="text-sm font-medium text-sky-300">Scheduled</p>
+                                    <p className="text-xs text-muted-foreground">{localLabel}</p>
+                                    {timeZone !== PACIFIC_TZ && (
+                                        <p className="text-[11px] text-muted-foreground/70">= {pacificLabel}</p>
+                                    )}
+                                </div>
                             </div>
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={onCancelSchedule}
+                                className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
+                            >
+                                <X className="h-4 w-4 mr-1" />
+                                Cancel
+                            </Button>
                         </div>
-                        <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={onCancelSchedule}
-                            className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
-                        >
-                            <X className="h-4 w-4 mr-1" />
-                            Cancel
-                        </Button>
-                    </div>
-                )}
+                    )
+                })()}
 
                 {/* Action buttons */}
                 {!isScheduled && (
@@ -214,9 +210,21 @@ export function LaunchpadCard({
                 {/* Schedule picker */}
                 {showSchedulePicker && !isScheduled && (
                     <div className="rounded-lg border border-border bg-card/50 p-4 space-y-3">
-                        <div className="flex items-center justify-between">
+                        <div className="flex items-center justify-between gap-3">
                             <p className="text-sm font-medium text-foreground">Pick a date and time</p>
-                            <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-400 border border-sky-500/20">PT</span>
+                            <Select value={timeZone} onValueChange={setTimeZone}>
+                                <SelectTrigger className="h-8 w-[200px] text-xs">
+                                    <Globe className="h-3 w-3 mr-1 shrink-0" />
+                                    <SelectValue placeholder="Time zone" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {tzOptions.map(opt => (
+                                        <SelectItem key={opt.value} value={opt.value} className="text-xs">
+                                            {opt.label}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
                         </div>
                         <div className="flex gap-2">
                             {/* Date Picker */}
@@ -295,6 +303,12 @@ export function LaunchpadCard({
                                 </PopoverContent>
                             </Popover>
                         </div>
+                        {pickerInstant && !isPastTime && !isPacific && (
+                            <p className="text-xs text-muted-foreground">
+                                Sends at <span className="text-foreground">{formatInTimeZone(pickerInstant, timeZone)} {getTimeZoneAbbreviation(pickerInstant, timeZone)}</span>
+                                {" "}= <span className="text-foreground">{formatInTimeZone(pickerInstant, PACIFIC_TZ)} {getTimeZoneAbbreviation(pickerInstant, PACIFIC_TZ)}</span>
+                            </p>
+                        )}
                         {isPastTime && (
                             <p className="text-xs text-amber-400 flex items-center gap-1">
                                 <AlertTriangle className="h-3 w-3 shrink-0" />
