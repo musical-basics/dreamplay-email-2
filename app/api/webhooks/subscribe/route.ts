@@ -18,7 +18,8 @@ const resend = new Resend(process.env.RESEND_API_KEY!);
 // 1. Define your Safe List
 const allowedOrigins = [
     "https://dreamplaypianos.com",
-    "https://www.dreamplaypianos.com"
+    "https://www.dreamplaypianos.com",
+    "https://belgium-concert-landing-page.vercel.app",
 ];
 
 // 2. Helper to generate dynamic headers based on who is asking
@@ -582,7 +583,7 @@ async function executeTriggers(subscriberTags: string[], subscriberId: string, s
 
 export async function POST(request: Request) {
     try {
-        const { email, first_name, last_name, tags, city, country, ip_address, temp_session_id, workspace: rawWorkspace } = await request.json();
+        const { email, first_name, last_name, tags, city, country, ip_address, temp_session_id, workspace: rawWorkspace, gdpr_consent } = await request.json();
 
         if (!email) {
             return NextResponse.json(
@@ -600,6 +601,7 @@ export async function POST(request: Request) {
             city,
             country,
             workspace,
+            gdpr_consent: gdpr_consent !== undefined ? !!gdpr_consent : "not provided",
         });
 
         // 🏷️ Auto-create tag_definitions for any new tags
@@ -652,6 +654,11 @@ export async function POST(request: Request) {
                 location_country: country,
                 ip_address: ip_address,
                 workspace,
+                // GDPR: only write consent fields if explicitly provided
+                ...(gdpr_consent !== undefined ? {
+                    gdpr_consent: !!gdpr_consent,
+                    consent_timestamp: gdpr_consent ? new Date().toISOString() : null,
+                } : {}),
             }, { onConflict: "email, workspace" })
             .select()
             .single();
