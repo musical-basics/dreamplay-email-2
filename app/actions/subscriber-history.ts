@@ -78,11 +78,16 @@ export async function getSubscriberChains(subscriberId: string) {
 }
 
 /**
- * Optimized: Get only the latest sent email per subscriber.
+ * Optimized: Get only the latest sent email per subscriber, scoped to a workspace.
  * Instead of fetching ALL sent_history rows (which grows with every campaign),
  * this fetches in batches and deduplicates server-side.
+ *
+ * `sent_history` has no `workspace` column directly — we scope through the
+ * `subscribers!inner(workspace)` join. Without this, fresh/small workspaces
+ * paid the cost of scanning every other workspace's history before the
+ * "no new subscriber_ids" termination kicked in.
  */
-export async function getLastSentPerSubscriber(): Promise<Record<string, { subject: string; sentAt: string }>> {
+export async function getLastSentPerSubscriber(workspace: string): Promise<Record<string, { subject: string; sentAt: string }>> {
     const supabase = await createClient()
     const lookup: Record<string, { subject: string; sentAt: string }> = {}
 
@@ -96,7 +101,8 @@ export async function getLastSentPerSubscriber(): Promise<Record<string, { subje
     while (!allFound) {
         const { data, error } = await supabase
             .from("sent_history")
-            .select("subscriber_id, sent_at, campaign_id, campaigns(subject_line)")
+            .select("subscriber_id, sent_at, campaign_id, campaigns(subject_line), subscribers!inner(workspace)")
+            .eq("subscribers.workspace", workspace)
             .order("sent_at", { ascending: false })
             .range(offset, offset + batchSize - 1)
 
@@ -124,10 +130,14 @@ export async function getLastSentPerSubscriber(): Promise<Record<string, { subje
     return lookup
 }
 /**
- * Get pending scheduled campaigns per subscriber.
+ * Get pending scheduled campaigns per subscriber, scoped to a workspace.
  * Returns a lookup of subscriber_id -> { subject, scheduledAt, campaignName }
+ *
+ * Both `campaigns` and `rotations` carry a `workspace` column. Without
+ * filtering, fresh/small workspaces paid the cost of fetching every other
+ * workspace's pending schedules.
  */
-export async function getScheduledPerSubscriber(): Promise<Record<string, { subject: string; scheduledAt: string; campaignName: string; scheduleId: string; scheduleType: 'campaign' | 'rotation' }>> {
+export async function getScheduledPerSubscriber(workspace: string): Promise<Record<string, { subject: string; scheduledAt: string; campaignName: string; scheduleId: string; scheduleType: 'campaign' | 'rotation' }>> {
     const supabase = await createClient()
 
     // Fetch scheduled campaigns AND scheduled rotations in parallel
@@ -135,11 +145,13 @@ export async function getScheduledPerSubscriber(): Promise<Record<string, { subj
         supabase
             .from("campaigns")
             .select("id, name, subject_line, scheduled_at, variable_values")
+            .eq("workspace", workspace)
             .eq("scheduled_status", "pending")
             .not("scheduled_at", "is", null),
         supabase
             .from("rotations")
             .select("id, name, scheduled_at, scheduled_subscriber_ids")
+            .eq("workspace", workspace)
             .eq("scheduled_status", "pending")
             .not("scheduled_at", "is", null),
     ])

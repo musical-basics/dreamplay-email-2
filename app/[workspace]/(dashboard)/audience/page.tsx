@@ -317,8 +317,8 @@ export default function AudienceManagerPage() {
         // Run all queries in parallel for faster loading
         const [allSubscribers, lastSentLookup, scheduledLookup] = await Promise.all([
             fetchAllSubscribers(),
-            getLastSentPerSubscriber(),
-            getScheduledPerSubscriber(),
+            getLastSentPerSubscriber(workspace),
+            getScheduledPerSubscriber(workspace),
         ])
 
         setSubscribers(allSubscribers as Subscriber[])
@@ -1680,7 +1680,7 @@ export default function AudienceManagerPage() {
                                                                                     }
                                                                                     toast({ title: 'Schedule cancelled', description: `"${sched.campaignName}" has been unscheduled.` })
                                                                                     // Refresh scheduled data
-                                                                                    const updated = await getScheduledPerSubscriber()
+                                                                                    const updated = await getScheduledPerSubscriber(workspace)
                                                                                     setScheduledCampaigns(updated)
                                                                                 } catch (err) {
                                                                                     console.error('Cancel error:', err)
