@@ -86,7 +86,7 @@ export function UnsubscribeConfirm({ subscriberId, campaignId, email, workspaceL
             )}
 
             <div className={`grid gap-3 mb-6 ${email ? "grid-cols-2" : "grid-cols-1"}`}>
-                {/* Option 1 — workspace-specific */}
+                {/* Option 1: workspace-specific */}
                 <button
                     onClick={() => handleUnsubscribe("workspace")}
                     disabled={isLoading}
@@ -108,7 +108,7 @@ export function UnsubscribeConfirm({ subscriberId, campaignId, email, workspaceL
                     </div>
                 </button>
 
-                {/* Option 2 — unsubscribe from all (only shown if email is available) */}
+                {/* Option 2: unsubscribe from all (only shown if email is available) */}
                 {email && (
                     <button
                         onClick={() => handleUnsubscribe("all")}
@@ -122,7 +122,7 @@ export function UnsubscribeConfirm({ subscriberId, campaignId, email, workspaceL
                         <div>
                             <p className="text-sm font-semibold text-gray-800">Unsubscribe from all emails</p>
                             <p className="text-xs text-gray-400 mt-0.5 leading-snug">
-                                Remove me from every list — DreamPlay, Musical Basics, and all others
+                                Remove me from every list, DreamPlay, MusicalBasics, and all others
                             </p>
                         </div>
                     </button>

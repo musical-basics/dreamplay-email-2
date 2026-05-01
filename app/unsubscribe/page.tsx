@@ -4,7 +4,7 @@ import { UnsubscribeConfirm } from "./unsubscribe-confirm"
 const WORKSPACE_LABELS: Record<string, string> = {
     dreamplay_marketing: "DreamPlay Marketing",
     dreamplay_support: "DreamPlay Support",
-    musicalbasics: "Musical Basics",
+    musicalbasics: "MusicalBasics",
     crossover: "Crossover",
     concert_marketing: "Concert Marketing",
 }
@@ -40,7 +40,7 @@ export default async function UnsubscribePage({
             .single()
         email = data?.email
     } catch {
-        // Non-fatal — Option 2 will be hidden if email is unavailable
+        // Non-fatal: Option 2 will be hidden if email is unavailable
     }
 
     const workspaceLabel = workspace ? (WORKSPACE_LABELS[workspace] ?? workspace) : undefined
