@@ -198,7 +198,7 @@ export function AppSidebar() {
 
                 {/* Footer */}
                 <div className="border-t border-border p-4">
-                    <p className="text-xs text-muted-foreground">Musical Basics Engine v2.0</p>
+                    <p className="text-xs text-muted-foreground">MusicalBasics Engine v2.0</p>
                 </div>
             </div>
         </aside>

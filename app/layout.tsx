@@ -16,7 +16,7 @@ const geistMono = Geist_Mono({
 })
 
 export const metadata: Metadata = {
-  title: "Musical Basics Engine",
+  title: "MusicalBasics Engine",
   description: "Email Marketing Command Center",
 }
 

@@ -278,7 +278,7 @@ export default function SettingsPage() {
                 </CardHeader>
                 <CardContent className="space-y-6">
                     {senderEmails.map(email => {
-                        const label = email.includes("musicalbasics") ? "Musical Basics" : "DreamPlay Pianos"
+                        const label = email.includes("musicalbasics") ? "MusicalBasics" : "DreamPlay Pianos"
                         const settings = trackingSettings[email] || { click: true, open: true, resendClick: false, resendOpen: false }
                         const toggleSetting = async (field: "click" | "open" | "resendClick" | "resendOpen") => {
                             const next = !settings[field]

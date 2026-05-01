@@ -53,7 +53,7 @@ export function LockScreen({ children }: { children: React.ReactNode }) {
 
                 {/* Title */}
                 <h1 className="text-xl font-bold text-center text-foreground mb-1">
-                    Musical Basics
+                    MusicalBasics
                 </h1>
                 <p className="text-sm text-muted-foreground text-center mb-6">
                     Enter password to continue

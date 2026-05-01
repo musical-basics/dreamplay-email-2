@@ -1,6 +1,6 @@
 # DreamPlay Email Engine (v2)
 
-The Musical Basics email marketing platform. Multi-tenant, multi-workspace email engine built on Next.js 16, Supabase, Resend, and Inngest.
+The MusicalBasics email marketing platform. Multi-tenant, multi-workspace email engine built on Next.js 16, Supabase, Resend, and Inngest.
 
 ---
 

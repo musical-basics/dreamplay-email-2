@@ -54,7 +54,7 @@ export default function GatewayPage() {
                         <Music className="w-8 h-8 text-primary" />
                     </div>
                     <h1 className="text-3xl font-bold tracking-tight text-foreground">
-                        Musical Basics Engine
+                        MusicalBasics Engine
                     </h1>
                     <p className="text-muted-foreground max-w-md mx-auto">
                         Select a workspace to begin. Each workspace is fully isolated with its own subscribers, campaigns, and settings.
