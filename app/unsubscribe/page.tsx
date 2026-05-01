@@ -9,6 +9,18 @@ const WORKSPACE_LABELS: Record<string, string> = {
     concert_marketing: "Concert Marketing",
 }
 
+// Where to send a recipient who clicks "Keep me subscribed" — i.e. they
+// landed on the unsubscribe page by mistake and want to bounce back to the
+// brand site, not the internal admin dashboard at email.dreamplaypianos.com.
+const WORKSPACE_HOME_URLS: Record<string, string> = {
+    dreamplay_marketing: "https://dreamplaypianos.com",
+    dreamplay_support: "https://dreamplaypianos.com",
+    crossover: "https://dreamplaypianos.com",
+    musicalbasics: "https://www.musicalbasics.com",
+    concert_marketing: "https://www.musicalbasics.com",
+}
+const DEFAULT_HOME_URL = "https://dreamplaypianos.com"
+
 export default async function UnsubscribePage({
     searchParams,
 }: {
@@ -44,6 +56,7 @@ export default async function UnsubscribePage({
     }
 
     const workspaceLabel = workspace ? (WORKSPACE_LABELS[workspace] ?? workspace) : undefined
+    const homeUrl = (workspace && WORKSPACE_HOME_URLS[workspace]) || DEFAULT_HOME_URL
 
     return (
         <div className="flex min-h-screen items-center justify-center bg-gray-50 px-4">
@@ -53,6 +66,7 @@ export default async function UnsubscribePage({
                     campaignId={campaignId}
                     email={email}
                     workspaceLabel={workspaceLabel}
+                    homeUrl={homeUrl}
                 />
             </div>
         </div>

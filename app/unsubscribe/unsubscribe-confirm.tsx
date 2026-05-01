@@ -10,12 +10,13 @@ interface Props {
     campaignId?: string
     email?: string
     workspaceLabel?: string
+    homeUrl?: string
 }
 
 type Choice = "workspace" | "all"
 type Status = "idle" | "loading" | "success" | "error"
 
-export function UnsubscribeConfirm({ subscriberId, campaignId, email, workspaceLabel }: Props) {
+export function UnsubscribeConfirm({ subscriberId, campaignId, email, workspaceLabel, homeUrl }: Props) {
     const [status, setStatus] = useState<Status>("idle")
     const [choice, setChoice] = useState<Choice | null>(null)
 
@@ -130,7 +131,7 @@ export function UnsubscribeConfirm({ subscriberId, campaignId, email, workspaceL
             </div>
 
             <a
-                href="/"
+                href={homeUrl || "https://dreamplaypianos.com"}
                 className="text-xs text-red-500 hover:text-red-600 hover:underline transition-colors"
             >
                 Keep me subscribed
