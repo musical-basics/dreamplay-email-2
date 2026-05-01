@@ -179,14 +179,21 @@ export async function getCampaigns(
         }
     }
 
-    // Fetch events only for paginated completed campaigns
+    // Fetch events only for paginated completed campaigns.
+    // batchSize=1 here intentionally: PostgREST + Supabase cap SELECT at
+    // ~1000 rows server-side regardless of client .limit(). When .in()
+    // bundles many campaigns, older high-volume sends saturate the cap and
+    // newer campaigns get zero rows back. Querying one campaign at a time
+    // keeps each call well under the cap. With ~25 paginated campaigns this
+    // is 25 round-trips per query type, which is fine for a paginated view.
     const openEvents = await batchedIn<{ campaign_id: string; subscriber_id: string }>(
         async (ids) => await supabase
             .from("subscriber_events")
             .select("campaign_id, subscriber_id")
             .eq("type", "open")
             .in("campaign_id", ids),
-        paginatedCompletedIds
+        paginatedCompletedIds,
+        1
     )
 
     const clickEvents = await batchedIn<{ campaign_id: string; subscriber_id: string }>(
@@ -195,7 +202,8 @@ export async function getCampaigns(
             .select("campaign_id, subscriber_id")
             .eq("type", "click")
             .in("campaign_id", ids),
-        paginatedCompletedIds
+        paginatedCompletedIds,
+        1
     )
 
     const conversionEvents = await batchedIn<{ campaign_id: string; subscriber_id: string; url?: string }>(
@@ -205,7 +213,8 @@ export async function getCampaigns(
             .eq("type", "page_view")
             .ilike("url", "%/customize%")
             .in("campaign_id", ids),
-        paginatedCompletedIds
+        paginatedCompletedIds,
+        1
     )
 
     // Count unique subscribers per campaign
