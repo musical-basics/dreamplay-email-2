@@ -101,7 +101,7 @@ async function handleCampaigns(
   if (method === "GET" && campaignId && action === "sent-history") {
     const { data, error } = await supabase
       .from("sent_history")
-      .select("subscriber_id, sent_at, resend_email_id, subscribers(email, first_name, last_name, tags)")
+      .select("subscriber_id, sent_at, subscribers(email, first_name, last_name, tags)")
       .eq("campaign_id", campaignId)
       .order("sent_at", { ascending: false });
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
@@ -389,7 +389,7 @@ async function handleSubscribers(
     const [sentRes, eventsRes] = await Promise.all([
       supabase
         .from("sent_history")
-        .select("campaign_id, sent_at, resend_email_id, campaigns(name, subject_line)")
+        .select("campaign_id, sent_at, campaigns(name, subject_line)")
         .eq("subscriber_id", subscriberId)
         .order("sent_at", { ascending: false }),
       supabase

@@ -549,12 +549,21 @@ async function executeTriggers(subscriberTags: string[], subscriberId: string, s
                 });
 
                 // Log to sent_history (using child campaign ID)
-                await supabase.from("sent_history").insert({
+                const { error: historyErr } = await supabase.from("sent_history").insert({
                     campaign_id: trackingCampaignId,
                     subscriber_id: subscriberId,
-                    resend_email_id: emailResult?.id || null,
+                    sent_at: new Date().toISOString(),
+                    variant_sent: subjectLine,
                     merge_tag_log: (trigger as any)._mergeTagLog || null,
                 });
+                if (historyErr) {
+                    await logTriggerEvent("warn", `Failed to save sent_history row`, {
+                        trigger_name: trigger.name,
+                        subscriber_email: subscriberEmail,
+                        child_campaign_id: trackingCampaignId,
+                        error: historyErr.message,
+                    });
+                }
 
                 // Mark child campaign as completed
                 await supabase.from("campaigns").update({
