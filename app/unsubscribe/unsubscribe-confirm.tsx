@@ -131,7 +131,7 @@ export function UnsubscribeConfirm({ subscriberId, campaignId, email, workspaceL
 
             <a
                 href="/"
-                className="text-xs text-gray-400 hover:text-gray-600 hover:underline transition-colors"
+                className="text-xs text-red-500 hover:text-red-600 hover:underline transition-colors"
             >
                 Keep me subscribed
             </a>
