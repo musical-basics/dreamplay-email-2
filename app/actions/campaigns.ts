@@ -2,7 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createClient as createServiceClient } from "@supabase/supabase-js"
-import { revalidatePath } from "next/cache"
+import { revalidatePath, unstable_noStore as noStore } from "next/cache"
 import { redirect } from "next/navigation"
 
 export async function createCampaign(prevState: any, formData: FormData) {
@@ -63,6 +63,13 @@ export async function getCampaigns(
     emailType?: string,
     opts?: { completedPage?: number; completedPageSize?: number }
 ) {
+    // Opt out of Next.js's fetch/data cache so subscriber_events read fresh
+    // every render. force-dynamic on the page route is not enough; without
+    // this the supabase calls below (which go through fetch under the hood)
+    // can return cached results, causing the Open Rate column to show 0%
+    // even when events are present in the DB.
+    noStore()
+
     const supabase = createServiceClient(
         process.env.NEXT_PUBLIC_SUPABASE_URL!,
         process.env.SUPABASE_SERVICE_KEY!
