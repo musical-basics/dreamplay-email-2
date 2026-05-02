@@ -15,10 +15,6 @@ export async function GET(request: Request) {
 
     if (!url) return new NextResponse("Missing URL", { status: 400 });
 
-    let dbgInsertOutcome = "skipped";
-    let dbgInsertErr = "";
-    let dbgReturnedIp = "(none)";
-    let dbgReturnedUa = "(none)";
     if (campaignId && subscriberId) {
         // Capture IP + User-Agent so a read-time filter can exclude email
         // security scanners (Microsoft ATP Safe Links, Mimecast, Proofpoint,
@@ -41,24 +37,16 @@ export async function GET(request: Request) {
             ...baseRow,
             ip_address: ipAddress,
             user_agent: userAgent,
-        }).select("id, ip_address, user_agent").single();
+        });
         if (enrichedInsert.error) {
             const msg = enrichedInsert.error.message || "";
-            dbgInsertErr = msg.slice(0, 80);
             if (/ip_address|user_agent/i.test(msg)) {
-                console.warn("[track/click] subscriber_events missing ip/ua columns, falling back. Run the migration in dp-email-3/_work/migrations/.");
+                console.warn("[track/click] subscriber_events missing ip/ua columns, falling back.");
                 await supabase.from("subscriber_events").insert(baseRow);
-                dbgInsertOutcome = "fallback";
             } else {
                 console.error("[track/click] insert failed:", enrichedInsert.error);
-                dbgInsertOutcome = "error-no-fallback";
             }
-        } else {
-            dbgInsertOutcome = "enriched-ok";
         }
-        const r = enrichedInsert.data as { ip_address?: string | null; user_agent?: string | null } | null;
-        dbgReturnedIp = r?.ip_address ?? "(null)";
-        dbgReturnedUa = (r?.user_agent ?? "(null)").slice(0, 60);
     }
 
     // Prepare the destination URL
@@ -106,19 +94,5 @@ export async function GET(request: Request) {
         return new NextResponse("Invalid URL", { status: 400 });
     }
 
-    const res = NextResponse.redirect(destination.toString());
-    // Deploy marker so we can confirm which build is actually serving.
-    res.headers.set("x-track-click-version", "ip-ua-2026-05-02");
-    // Debug: surface what we actually saw on the request side, so we can
-    // tell whether NULL ip/ua is a header-not-passed issue or an
-    // insert-not-writing-it issue.
-    const dbgUa = request.headers.get("user-agent");
-    const dbgXff = request.headers.get("x-forwarded-for");
-    res.headers.set("x-debug-ua-len", String(dbgUa?.length ?? 0));
-    res.headers.set("x-debug-xff-len", String(dbgXff?.length ?? 0));
-    res.headers.set("x-debug-insert", dbgInsertOutcome);
-    if (dbgInsertErr) res.headers.set("x-debug-insert-err", encodeURIComponent(dbgInsertErr));
-    res.headers.set("x-debug-returned-ip", encodeURIComponent(dbgReturnedIp));
-    res.headers.set("x-debug-returned-ua", encodeURIComponent(dbgReturnedUa));
-    return res;
+    return NextResponse.redirect(destination.toString());
 }
