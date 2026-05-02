@@ -94,5 +94,8 @@ export async function GET(request: Request) {
         return new NextResponse("Invalid URL", { status: 400 });
     }
 
-    return NextResponse.redirect(destination.toString());
+    const res = NextResponse.redirect(destination.toString());
+    // Deploy marker so we can confirm which build is actually serving.
+    res.headers.set("x-track-click-version", "ip-ua-2026-05-02");
+    return res;
 }
