@@ -17,6 +17,8 @@ export async function GET(request: Request) {
 
     let dbgInsertOutcome = "skipped";
     let dbgInsertErr = "";
+    let dbgReturnedIp = "(none)";
+    let dbgReturnedUa = "(none)";
     if (campaignId && subscriberId) {
         // Capture IP + User-Agent so a read-time filter can exclude email
         // security scanners (Microsoft ATP Safe Links, Mimecast, Proofpoint,
@@ -39,7 +41,7 @@ export async function GET(request: Request) {
             ...baseRow,
             ip_address: ipAddress,
             user_agent: userAgent,
-        });
+        }).select("id, ip_address, user_agent").single();
         if (enrichedInsert.error) {
             const msg = enrichedInsert.error.message || "";
             dbgInsertErr = msg.slice(0, 80);
@@ -54,6 +56,9 @@ export async function GET(request: Request) {
         } else {
             dbgInsertOutcome = "enriched-ok";
         }
+        const r = enrichedInsert.data as { ip_address?: string | null; user_agent?: string | null } | null;
+        dbgReturnedIp = r?.ip_address ?? "(null)";
+        dbgReturnedUa = (r?.user_agent ?? "(null)").slice(0, 60);
     }
 
     // Prepare the destination URL
@@ -113,5 +118,7 @@ export async function GET(request: Request) {
     res.headers.set("x-debug-xff-len", String(dbgXff?.length ?? 0));
     res.headers.set("x-debug-insert", dbgInsertOutcome);
     if (dbgInsertErr) res.headers.set("x-debug-insert-err", encodeURIComponent(dbgInsertErr));
+    res.headers.set("x-debug-returned-ip", encodeURIComponent(dbgReturnedIp));
+    res.headers.set("x-debug-returned-ua", encodeURIComponent(dbgReturnedUa));
     return res;
 }
