@@ -15,6 +15,8 @@ export async function GET(request: Request) {
 
     if (!url) return new NextResponse("Missing URL", { status: 400 });
 
+    let dbgInsertOutcome = "skipped";
+    let dbgInsertErr = "";
     if (campaignId && subscriberId) {
         // Capture IP + User-Agent so a read-time filter can exclude email
         // security scanners (Microsoft ATP Safe Links, Mimecast, Proofpoint,
@@ -40,12 +42,17 @@ export async function GET(request: Request) {
         });
         if (enrichedInsert.error) {
             const msg = enrichedInsert.error.message || "";
+            dbgInsertErr = msg.slice(0, 80);
             if (/ip_address|user_agent/i.test(msg)) {
                 console.warn("[track/click] subscriber_events missing ip/ua columns, falling back. Run the migration in dp-email-3/_work/migrations/.");
                 await supabase.from("subscriber_events").insert(baseRow);
+                dbgInsertOutcome = "fallback";
             } else {
                 console.error("[track/click] insert failed:", enrichedInsert.error);
+                dbgInsertOutcome = "error-no-fallback";
             }
+        } else {
+            dbgInsertOutcome = "enriched-ok";
         }
     }
 
@@ -104,5 +111,7 @@ export async function GET(request: Request) {
     const dbgXff = request.headers.get("x-forwarded-for");
     res.headers.set("x-debug-ua-len", String(dbgUa?.length ?? 0));
     res.headers.set("x-debug-xff-len", String(dbgXff?.length ?? 0));
+    res.headers.set("x-debug-insert", dbgInsertOutcome);
+    if (dbgInsertErr) res.headers.set("x-debug-insert-err", encodeURIComponent(dbgInsertErr));
     return res;
 }
