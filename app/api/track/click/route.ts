@@ -34,6 +34,8 @@ export async function GET(request: Request) {
         const allowedDomains = [
             "dreamplaypianos.com",
             "www.dreamplaypianos.com",
+            "musicalbasics.com",
+            "ultimatepianist.com",
             "youtube.com",
             "youtu.be",
             "instagram.com",
@@ -53,9 +55,11 @@ export async function GET(request: Request) {
         }
 
         // 3. Add tracking params for our own domains
-        if (destination.hostname === "dreamplaypianos.com" ||
-            destination.hostname.endsWith(".dreamplaypianos.com") ||
-            destination.hostname === "localhost") {
+        const ownDomains = ["dreamplaypianos.com", "musicalbasics.com", "ultimatepianist.com"];
+        const isOwnDomain =
+            ownDomains.some((d) => destination.hostname === d || destination.hostname.endsWith(`.${d}`)) ||
+            destination.hostname === "localhost";
+        if (isOwnDomain) {
             if (subscriberId) destination.searchParams.set("sid", subscriberId);
             if (campaignId) destination.searchParams.set("cid", campaignId);
         }
