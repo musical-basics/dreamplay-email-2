@@ -97,5 +97,12 @@ export async function GET(request: Request) {
     const res = NextResponse.redirect(destination.toString());
     // Deploy marker so we can confirm which build is actually serving.
     res.headers.set("x-track-click-version", "ip-ua-2026-05-02");
+    // Debug: surface what we actually saw on the request side, so we can
+    // tell whether NULL ip/ua is a header-not-passed issue or an
+    // insert-not-writing-it issue.
+    const dbgUa = request.headers.get("user-agent");
+    const dbgXff = request.headers.get("x-forwarded-for");
+    res.headers.set("x-debug-ua-len", String(dbgUa?.length ?? 0));
+    res.headers.set("x-debug-xff-len", String(dbgXff?.length ?? 0));
     return res;
 }
