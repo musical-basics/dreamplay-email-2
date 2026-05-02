@@ -16,13 +16,37 @@ export async function GET(request: Request) {
     if (!url) return new NextResponse("Missing URL", { status: 400 });
 
     if (campaignId && subscriberId) {
-        // Just log the event — rates are computed from unique events at read time
-        await supabase.from("subscriber_events").insert({
+        // Capture IP + User-Agent so a read-time filter can exclude email
+        // security scanners (Microsoft ATP Safe Links, Mimecast, Proofpoint,
+        // Slack/Discord link unfurlers, etc.) from real human clicks.
+        // Vercel forwards the client IP as x-forwarded-for; first hop is the
+        // real client.
+        const xff = request.headers.get("x-forwarded-for") || "";
+        const ipAddress = xff.split(",")[0].trim() || null;
+        const userAgent = request.headers.get("user-agent") || null;
+
+        const baseRow = {
             type: "click",
             campaign_id: campaignId,
             subscriber_id: subscriberId,
-            url: url
+            url: url,
+        };
+        // Defensive: try the new shape first; if the columns don't exist
+        // yet (migration not run), fall back so the redirect still works.
+        const enrichedInsert = await supabase.from("subscriber_events").insert({
+            ...baseRow,
+            ip_address: ipAddress,
+            user_agent: userAgent,
         });
+        if (enrichedInsert.error) {
+            const msg = enrichedInsert.error.message || "";
+            if (/ip_address|user_agent/i.test(msg)) {
+                console.warn("[track/click] subscriber_events missing ip/ua columns, falling back. Run the migration in dp-email-3/_work/migrations/.");
+                await supabase.from("subscriber_events").insert(baseRow);
+            } else {
+                console.error("[track/click] insert failed:", enrichedInsert.error);
+            }
+        }
     }
 
     // Prepare the destination URL
